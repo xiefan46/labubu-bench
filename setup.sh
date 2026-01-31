@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================================
-# labubu-bench setup script
+# labubu-bench setup script (re-entrant)
 # Usage: git clone labubu-bench && cd labubu-bench && bash setup.sh
 #
 # Final structure:
@@ -14,8 +14,11 @@ set -euo pipefail
 # ============================================================
 
 # ---------- Miniconda (parallel to labubu-bench) ----------
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-bash Miniconda3-latest-Linux-x86_64.sh -b -p ../miniconda3
+if [ ! -d ../miniconda3 ]; then
+    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+    bash Miniconda3-latest-Linux-x86_64.sh -b -p ../miniconda3
+    rm -f Miniconda3-latest-Linux-x86_64.sh
+fi
 
 source ../miniconda3/bin/activate
 
@@ -23,7 +26,9 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/ma
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
 # ---------- Conda environment ----------
-conda create -n fi-bench python=3.12 -y
+if ! conda env list | grep -q "fi-bench"; then
+    conda create -n fi-bench python=3.12 -y
+fi
 conda activate fi-bench
 
 # ---------- Python packages ----------
@@ -36,17 +41,25 @@ apt-get install git-lfs -y
 git lfs install
 
 # ---------- Dataset ----------
-git clone https://huggingface.co/datasets/flashinfer-ai/flashinfer-trace
+if [ ! -d flashinfer-trace ]; then
+    git clone https://huggingface.co/datasets/flashinfer-ai/flashinfer-trace
+fi
 
 # ---------- Projects ----------
 mkdir -p projects
 cd projects
 
-git clone https://github.com/xiefan46/flashinfer.git
-cd flashinfer && git remote add upstream https://github.com/flashinfer-ai/flashinfer.git && cd ..
+if [ ! -d flashinfer ]; then
+    git clone https://github.com/xiefan46/flashinfer.git
+    cd flashinfer && git remote add upstream https://github.com/flashinfer-ai/flashinfer.git && cd ..
+fi
 
-git clone https://github.com/xiefan46/flashinfer-bench.git
+if [ ! -d flashinfer-bench ]; then
+    git clone https://github.com/xiefan46/flashinfer-bench.git
+fi
 cd flashinfer-bench && pip install -v -e . && cd ..
 
-git clone -b moe-kernel-optimizations https://github.com/xiefan46/flashinfer-bench-starter-kit.git
-cd flashinfer-bench-starter-kit && git remote add upstream https://github.com/flashinfer-ai/flashinfer-bench-starter-kit.git && cd ..
+if [ ! -d flashinfer-bench-starter-kit ]; then
+    git clone https://github.com/xiefan46/flashinfer-bench-starter-kit.git
+    cd flashinfer-bench-starter-kit && git remote add upstream https://github.com/flashinfer-ai/flashinfer-bench-starter-kit.git && cd ..
+fi
