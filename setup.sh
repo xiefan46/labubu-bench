@@ -79,21 +79,44 @@ if [ ! -d flashinfer-bench-starter-kit ]; then
     cd flashinfer-bench-starter-kit && git remote add upstream https://github.com/flashinfer-ai/flashinfer-bench-starter-kit.git && cd ..
 fi
 
-# ---------- Patch: fix flashinfer_moe solution missing destination_passing_style ----------
+# ---------- Patch: fix flashinfer_moe solution bugs in flashinfer-trace ----------
 step "Patching flashinfer-trace dataset"
 MOE_SOL_DIR="$(cd .. && pwd)/flashinfer-trace/solutions/moe/moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048"
 if [ -f "$MOE_SOL_DIR/flashinfer_wrapper_9sdjf3.json" ]; then
-    python3 -c "
-import json,sys
-f='$MOE_SOL_DIR/flashinfer_wrapper_9sdjf3.json'
-d=json.load(open(f))
-if d['spec'].get('destination_passing_style') is not False:
-    d['spec']['destination_passing_style']=False
-    json.dump(d,open(f,'w'),indent=2)
-    print('Patched: set destination_passing_style=false')
+    python3 << PATCH_EOF
+import json, re
+
+f = "$MOE_SOL_DIR/flashinfer_wrapper_9sdjf3.json"
+d = json.load(open(f))
+patched = False
+
+# Fix 1: missing destination_passing_style
+if d["spec"].get("destination_passing_style") is not False:
+    d["spec"]["destination_passing_style"] = False
+    print("Patched: set destination_passing_style=false")
+    patched = True
+
+# Fix 2: tile_tokens_dim is not a public API param, remove it from source
+for src in d.get("sources", []):
+    if src["path"] == "main.py" and "tile_tokens_dim" in src["content"]:
+        code = src["content"]
+        # Remove _next_power_of_2 helper
+        code = re.sub(r'\ndef _next_power_of_2\(.*?\n(?=\ndef |\n@|\Z)', '\n', code, flags=re.DOTALL)
+        # Remove _get_tile_tokens_dim helper
+        code = re.sub(r'\ndef _get_tile_tokens_dim\(.*?\n(?=\ndef |\n@|\Z)', '\n', code, flags=re.DOTALL)
+        # Remove tile_tokens_dim local variable assignment
+        code = re.sub(r'    tile_tokens_dim = _get_tile_tokens_dim\(.*?\n', '', code)
+        # Remove tile_tokens_dim=tile_tokens_dim kwarg in function call
+        code = re.sub(r'        tile_tokens_dim=tile_tokens_dim,\n', '', code)
+        src["content"] = code
+        print("Patched: removed tile_tokens_dim from main.py")
+        patched = True
+
+if patched:
+    json.dump(d, open(f, "w"), indent=2)
 else:
-    print('Already patched, skipping')
-"
+    print("Already patched, skipping")
+PATCH_EOF
 fi
 
 # ---------- Export FIB_DATASET_PATH to .bashrc ----------
