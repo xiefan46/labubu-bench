@@ -79,6 +79,23 @@ if [ ! -d flashinfer-bench-starter-kit ]; then
     cd flashinfer-bench-starter-kit && git remote add upstream https://github.com/flashinfer-ai/flashinfer-bench-starter-kit.git && cd ..
 fi
 
+# ---------- Patch: fix flashinfer_moe solution missing destination_passing_style ----------
+step "Patching flashinfer-trace dataset"
+MOE_SOL_DIR="$(cd .. && pwd)/flashinfer-trace/solutions/moe/moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048"
+if [ -f "$MOE_SOL_DIR/flashinfer_wrapper_9sdjf3.json" ]; then
+    python3 -c "
+import json,sys
+f='$MOE_SOL_DIR/flashinfer_wrapper_9sdjf3.json'
+d=json.load(open(f))
+if d['spec'].get('destination_passing_style') is not False:
+    d['spec']['destination_passing_style']=False
+    json.dump(d,open(f,'w'),indent=2)
+    print('Patched: set destination_passing_style=false')
+else:
+    print('Already patched, skipping')
+"
+fi
+
 # ---------- Quick start hints ----------
 FIB_DATASET_PATH="$(cd .. && pwd)/flashinfer-trace"
 echo -e "
