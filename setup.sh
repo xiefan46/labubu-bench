@@ -95,6 +95,9 @@ flashinfer-bench run --local $FIB_DATASET_PATH
 ${YELLOW}# Run MOE benchmark (MLSys 2026 competition):${RESET}
 flashinfer-bench run --local $FIB_DATASET_PATH --definitions moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048
 
+${YELLOW}# Run MOE benchmark with flashinfer_moe solution only:${RESET}
+flashinfer-bench run --local $FIB_DATASET_PATH --definitions moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048 --solutions flashinfer_moe
+
 ${YELLOW}# Resume an interrupted run:${RESET}
 flashinfer-bench run --local $FIB_DATASET_PATH --resume
 
