@@ -92,8 +92,8 @@ ${BOLD}${GREEN}   source ../miniconda3/bin/activate && conda activate fi-bench${
 ${YELLOW}# Run all benchmarks:${RESET}
 flashinfer-bench run --local $FIB_DATASET_PATH
 
-${YELLOW}# Run specific definitions:${RESET}
-flashinfer-bench run --local $FIB_DATASET_PATH --definitions gemm_n5120_k2048 rmsnorm_h128
+${YELLOW}# Run MOE benchmark (MLSys 2026 competition):${RESET}
+flashinfer-bench run --local $FIB_DATASET_PATH --definitions moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048
 
 ${YELLOW}# Resume an interrupted run:${RESET}
 flashinfer-bench run --local $FIB_DATASET_PATH --resume
