@@ -72,6 +72,9 @@ cat <<EOF
   Setup complete! Example commands:
 ========================================
 
+# Activate environment (required for each new terminal):
+source ../miniconda3/bin/activate && conda activate fi-bench
+
 # Run all benchmarks:
 flashinfer-bench run --local $FIB_DATASET_PATH
 
