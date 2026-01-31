@@ -63,3 +63,25 @@ if [ ! -d flashinfer-bench-starter-kit ]; then
     git clone https://github.com/xiefan46/flashinfer-bench-starter-kit.git
     cd flashinfer-bench-starter-kit && git remote add upstream https://github.com/flashinfer-ai/flashinfer-bench-starter-kit.git && cd ..
 fi
+
+# ---------- Quick start hints ----------
+FIB_DATASET_PATH="$(cd .. && pwd)/flashinfer-trace"
+cat <<EOF
+
+========================================
+  Setup complete! Example commands:
+========================================
+
+# Run all benchmarks:
+flashinfer-bench run --local $FIB_DATASET_PATH
+
+# Run specific definitions:
+flashinfer-bench run --local $FIB_DATASET_PATH --definitions gemm_n5120_k2048 rmsnorm_h128
+
+# Resume an interrupted run:
+flashinfer-bench run --local $FIB_DATASET_PATH --resume
+
+# Custom benchmark parameters:
+flashinfer-bench run --local $FIB_DATASET_PATH --warmup-runs 10 --iterations 100 --num-trials 5
+
+EOF

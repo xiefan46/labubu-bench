@@ -8,7 +8,7 @@ labubu-bench is a monorepo orchestrating three interconnected GPU kernel optimiz
 
 - **projects/flashinfer/** — High-performance GPU kernel library (attention, GEMM, MoE, sampling, communication). Uses JIT compilation via TVM-FFI.
 - **projects/flashinfer-bench/** — Benchmarking framework with a Definition→Solution→Workload→Trace pipeline. Supports AI-driven kernel optimization.
-- **projects/flashinfer-bench-starter-kit/** — MLSys2026 competition template for kernel generation on NVIDIA Blackwell GPUs. Currently on `moe-kernel-optimizations` branch.
+- **projects/flashinfer-bench-starter-kit/** — MLSys2026 competition template for kernel generation on NVIDIA Blackwell GPUs.
 
 ## Setup
 
@@ -66,6 +66,11 @@ cd projects/flashinfer-bench-starter-kit
 python scripts/run_local.py                  # local GPU benchmark
 python scripts/pack_solution.py              # pack for submission
 ```
+
+## Development Rules
+
+- **setup.sh must be re-entrant**: Any modification to `setup.sh` must ensure the script can be run multiple times safely. Use existence checks (`if [ ! -d ... ]`, `if ! conda env list | grep -q ...`, etc.) to skip already-completed steps.
+- **Ask before implementing**: For complex analysis, design, or coding tasks, clarify any uncertainties with the user before starting implementation.
 
 ## Architecture Notes
 
