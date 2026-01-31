@@ -86,8 +86,8 @@ ${BOLD}${GREEN}========================================${RESET}
 ${BOLD}${GREEN}  Setup complete! Example commands:${RESET}
 ${BOLD}${GREEN}========================================${RESET}
 
-${YELLOW}# Activate environment (required for each new terminal):${RESET}
-source ../miniconda3/bin/activate && conda activate fi-bench
+${BOLD}${YELLOW}⚠  Run this first in every new terminal:${RESET}
+${BOLD}${GREEN}   source ../miniconda3/bin/activate && conda activate fi-bench${RESET}
 
 ${YELLOW}# Run all benchmarks:${RESET}
 flashinfer-bench run --local $FIB_DATASET_PATH
