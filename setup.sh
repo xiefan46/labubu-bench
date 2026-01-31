@@ -13,7 +13,17 @@ set -euo pipefail
 #   ./projects/flashinfer-bench-starter-kit/
 # ============================================================
 
+# ---------- Colors ----------
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+RESET='\033[0m'
+
+step() { echo -e "\n${BOLD}${CYAN}=> $1${RESET}"; }
+
 # ---------- Miniconda (parallel to labubu-bench) ----------
+step "Installing Miniconda"
 if [ ! -d ../miniconda3 ]; then
     wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
     bash Miniconda3-latest-Linux-x86_64.sh -b -p ../miniconda3
@@ -26,26 +36,31 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/ma
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
 # ---------- Conda environment ----------
+step "Setting up conda environment"
 if ! conda env list | grep -q "fi-bench"; then
     conda create -n fi-bench python=3.12 -y
 fi
 conda activate fi-bench
 
 # ---------- Python packages ----------
+step "Installing Python packages"
 pip install flashinfer-python   # requires CUDA, SM80+ (A100/H100/B200)
 pip install safetensors torch
 
 # ---------- Git LFS ----------
+step "Installing Git LFS"
 apt-get update
 apt-get install git-lfs -y
 git lfs install
 
 # ---------- Dataset ----------
+step "Cloning flashinfer-trace dataset"
 if [ ! -d flashinfer-trace ]; then
     git clone https://huggingface.co/datasets/flashinfer-ai/flashinfer-trace
 fi
 
 # ---------- Projects ----------
+step "Cloning projects"
 mkdir -p projects
 cd projects
 
@@ -66,25 +81,23 @@ fi
 
 # ---------- Quick start hints ----------
 FIB_DATASET_PATH="$(cd .. && pwd)/flashinfer-trace"
-cat <<EOF
+echo -e "
+${BOLD}${GREEN}========================================${RESET}
+${BOLD}${GREEN}  Setup complete! Example commands:${RESET}
+${BOLD}${GREEN}========================================${RESET}
 
-========================================
-  Setup complete! Example commands:
-========================================
-
-# Activate environment (required for each new terminal):
+${YELLOW}# Activate environment (required for each new terminal):${RESET}
 source ../miniconda3/bin/activate && conda activate fi-bench
 
-# Run all benchmarks:
+${YELLOW}# Run all benchmarks:${RESET}
 flashinfer-bench run --local $FIB_DATASET_PATH
 
-# Run specific definitions:
+${YELLOW}# Run specific definitions:${RESET}
 flashinfer-bench run --local $FIB_DATASET_PATH --definitions gemm_n5120_k2048 rmsnorm_h128
 
-# Resume an interrupted run:
+${YELLOW}# Resume an interrupted run:${RESET}
 flashinfer-bench run --local $FIB_DATASET_PATH --resume
 
-# Custom benchmark parameters:
+${YELLOW}# Custom benchmark parameters:${RESET}
 flashinfer-bench run --local $FIB_DATASET_PATH --warmup-runs 10 --iterations 100 --num-trials 5
-
-EOF
+"
