@@ -3,18 +3,22 @@ set -euo pipefail
 
 # ============================================================
 # labubu-bench setup script
-# Sets up Miniconda, creates conda env, installs dependencies,
-# and prepares flashinfer-bench.
+# Usage: git clone labubu-bench && cd labubu-bench && bash setup.sh
+#
+# Final structure:
+#   ../miniconda3/          (conda, parallel to labubu-bench)
+#   ./flashinfer-trace/     (dataset, inside labubu-bench)
+#   ./projects/flashinfer/
+#   ./projects/flashinfer-bench/
+#   ./projects/flashinfer-bench-starter-kit/
 # ============================================================
 
-# ---------- Miniconda ----------
+# ---------- Miniconda (parallel to labubu-bench) ----------
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-bash Miniconda3-latest-Linux-x86_64.sh -b -p "$(pwd)/miniconda3"
+bash Miniconda3-latest-Linux-x86_64.sh -b -p ../miniconda3
 
-# Initialize the current shell
-source "$(pwd)/miniconda3/bin/activate"
+source ../miniconda3/bin/activate
 
-# Accept Anaconda TOS
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
@@ -31,9 +35,18 @@ apt-get update
 apt-get install git-lfs -y
 git lfs install
 
-# ---------- Datasets & benchmark repo ----------
+# ---------- Dataset ----------
 git clone https://huggingface.co/datasets/flashinfer-ai/flashinfer-trace
 
-git clone https://github.com/flashinfer-ai/flashinfer-bench.git
-cd flashinfer-bench
-pip install -v -e .
+# ---------- Projects ----------
+mkdir -p projects
+cd projects
+
+git clone https://github.com/xiefan46/flashinfer.git
+cd flashinfer && git remote add upstream https://github.com/flashinfer-ai/flashinfer.git && cd ..
+
+git clone https://github.com/xiefan46/flashinfer-bench.git
+cd flashinfer-bench && pip install -v -e . && cd ..
+
+git clone -b moe-kernel-optimizations https://github.com/xiefan46/flashinfer-bench-starter-kit.git
+cd flashinfer-bench-starter-kit && git remote add upstream https://github.com/flashinfer-ai/flashinfer-bench-starter-kit.git && cd ..
