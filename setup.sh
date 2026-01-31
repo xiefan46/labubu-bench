@@ -96,8 +96,14 @@ else:
 "
 fi
 
-# ---------- Quick start hints ----------
+# ---------- Export FIB_DATASET_PATH to .bashrc ----------
 FIB_DATASET_PATH="$(cd .. && pwd)/flashinfer-trace"
+if ! grep -q "FIB_DATASET_PATH" ~/.bashrc 2>/dev/null; then
+    echo "export FIB_DATASET_PATH=\"$FIB_DATASET_PATH\"" >> ~/.bashrc
+fi
+export FIB_DATASET_PATH
+
+# ---------- Quick start hints ----------
 echo -e "
 ${BOLD}${GREEN}========================================${RESET}
 ${BOLD}${GREEN}  Setup complete! Example commands:${RESET}
