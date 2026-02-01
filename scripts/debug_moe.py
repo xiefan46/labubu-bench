@@ -17,11 +17,11 @@ TOPK_GROUP = 4
 torch.manual_seed(42)
 
 # ── Generate inputs ──
-routing_logits = torch.randn(T, E_global, dtype=torch.float32, device="cuda")
-# Boost local experts (0..31) so routing selects them in top-8
-# Group 0 covers experts 0..31, ensure it wins group selection and top-k
-routing_logits[:, :E_local] += 5.0
-routing_bias = torch.randn(E_global, dtype=torch.bfloat16, device="cuda")
+routing_logits = torch.full((T, E_global), -10.0, dtype=torch.float32, device="cuda")
+# Force routing to select local experts 0..7 (all in group 0) by giving them high logits
+for i in range(TOP_K):
+    routing_logits[:, i] = 10.0 + float(i)
+routing_bias = torch.zeros(E_global, dtype=torch.bfloat16, device="cuda")
 hidden_states = torch.randn(T, H, dtype=torch.float32, device="cuda").to(torch.float8_e4m3fn)
 hidden_states_scale = torch.randn(H // BLOCK, T, dtype=torch.float32, device="cuda").abs() + 0.01
 gemm1_weights = torch.randn(E_local, 2 * I, H, dtype=torch.float32, device="cuda").to(
