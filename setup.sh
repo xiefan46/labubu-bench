@@ -80,11 +80,8 @@ if [ ! -d flashinfer-bench-starter-kit ]; then
 fi
 
 # ---------- SGLang sgl-kernel (for sglang_fp8_blockwise_moe solution) ----------
-step "Installing sgl_kernel from SGLang"
-if [ ! -d sglang ]; then
-    git clone https://github.com/sgl-project/sglang.git
-fi
-pip install -e sglang/sgl-kernel
+step "Installing sgl_kernel"
+pip install sgl-kernel
 
 # ---------- Patch: fix flashinfer_moe solution bugs in flashinfer-trace ----------
 step "Patching flashinfer-trace dataset"
