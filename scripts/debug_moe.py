@@ -12,13 +12,13 @@ block_size = 128
 
 routing_logits = torch.randn(seq_len, num_experts, dtype=torch.float32, device="cuda")
 routing_bias = torch.randn(num_experts, dtype=torch.float32, device="cuda")
-hidden_states = torch.randn(seq_len, hidden_size, dtype=torch.float8_e4m3fn, device="cuda")
+hidden_states = torch.randn(seq_len, hidden_size, dtype=torch.float32, device="cuda").to(torch.float8_e4m3fn)
 hidden_states_scale = torch.randn(
     hidden_size // block_size, seq_len, dtype=torch.float32, device="cuda"
 ).abs()
 gemm1_weights = torch.randn(
-    local_num_experts, 2 * intermediate_size, hidden_size, dtype=torch.float8_e4m3fn, device="cuda"
-)
+    local_num_experts, 2 * intermediate_size, hidden_size, dtype=torch.float32, device="cuda"
+).to(torch.float8_e4m3fn)
 gemm1_weights_scale = torch.randn(
     local_num_experts,
     (2 * intermediate_size) // block_size,
@@ -27,8 +27,8 @@ gemm1_weights_scale = torch.randn(
     device="cuda",
 ).abs()
 gemm2_weights = torch.randn(
-    local_num_experts, hidden_size, intermediate_size, dtype=torch.float8_e4m3fn, device="cuda"
-)
+    local_num_experts, hidden_size, intermediate_size, dtype=torch.float32, device="cuda"
+).to(torch.float8_e4m3fn)
 gemm2_weights_scale = torch.randn(
     local_num_experts,
     hidden_size // block_size,
