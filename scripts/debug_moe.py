@@ -18,6 +18,9 @@ torch.manual_seed(42)
 
 # ── Generate inputs ──
 routing_logits = torch.randn(T, E_global, dtype=torch.float32, device="cuda")
+# Boost local experts (0..31) so routing selects them in top-8
+# Group 0 covers experts 0..31, ensure it wins group selection and top-k
+routing_logits[:, :E_local] += 5.0
 routing_bias = torch.randn(E_global, dtype=torch.bfloat16, device="cuda")
 hidden_states = torch.randn(T, H, dtype=torch.float32, device="cuda").to(torch.float8_e4m3fn)
 hidden_states_scale = torch.randn(H // BLOCK, T, dtype=torch.float32, device="cuda").abs() + 0.01
