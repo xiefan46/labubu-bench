@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-labubu-bench is a monorepo orchestrating three interconnected GPU kernel optimization projects for LLM inference:
+labubu-bench is a monorepo for the [MLSys 2026 FlashInfer AI Kernel Competition](https://mlsys26.flashinfer.ai/), orchestrating three interconnected GPU kernel optimization projects for LLM inference:
 
 - **projects/flashinfer/** — High-performance GPU kernel library (attention, GEMM, MoE, sampling, communication). Uses JIT compilation via TVM-FFI.
 - **projects/flashinfer-bench/** — Benchmarking framework with a Definition→Solution→Workload→Trace pipeline. Supports AI-driven kernel optimization.

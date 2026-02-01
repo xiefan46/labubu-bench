@@ -72,7 +72,7 @@ fi
 if [ ! -d flashinfer-bench ]; then
     git clone https://github.com/xiefan46/flashinfer-bench.git
 fi
-cd flashinfer-bench && pip install -v -e . && cd ..
+cd flashinfer-bench && git checkout feat/cli-required-matched-ratio && pip install -v -e . && cd ..
 
 if [ ! -d flashinfer-bench-starter-kit ]; then
     git clone https://github.com/xiefan46/flashinfer-bench-starter-kit.git
@@ -141,8 +141,8 @@ flashinfer-bench run --local $FIB_DATASET_PATH
 ${YELLOW}# Run MOE benchmark (MLSys 2026 competition):${RESET}
 flashinfer-bench run --local $FIB_DATASET_PATH --definitions moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048
 
-${YELLOW}# Run MOE benchmark with flashinfer_moe solution only:${RESET}
-flashinfer-bench run --local $FIB_DATASET_PATH --definitions moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048 --solutions flashinfer_moe
+${YELLOW}# Run MOE benchmark with flashinfer_moe solution only (use --timeout for JIT warmup):${RESET}
+flashinfer-bench run --local $FIB_DATASET_PATH --definitions moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048 --solutions flashinfer_moe --timeout 1200
 
 ${YELLOW}# Resume an interrupted run:${RESET}
 flashinfer-bench run --local $FIB_DATASET_PATH --resume
