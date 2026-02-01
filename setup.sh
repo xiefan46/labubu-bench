@@ -200,6 +200,11 @@ def run(
     )
     # topk_weights: [T, TOP_K] float32, topk_ids: [T, TOP_K] int32
 
+    # moe_fused_gate with apply_routed_scaling_factor_on_output=False normalizes
+    # weights to sum=1 but does NOT multiply by routed_scaling_factor.
+    # The reference expects weights summing to routed_scaling_factor, so apply it.
+    topk_weights = topk_weights * routed_scaling_factor
+
     # --- Step 2: Map global expert IDs to local [0, E_LOCAL) ---
     # Tokens routed to non-local experts get weight=0 (no contribution)
     local_mask = (topk_ids >= local_expert_offset) & (
