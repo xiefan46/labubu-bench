@@ -71,10 +71,12 @@ python scripts/pack_solution.py              # pack for submission
 
 - **setup.sh must be re-entrant**: Any modification to `setup.sh` must ensure the script can be run multiple times safely. Use existence checks (`if [ ! -d ... ]`, `if ! conda env list | grep -q ...`, etc.) to skip already-completed steps.
 - **Ask before implementing**: For complex analysis, design, or coding tasks, clarify any uncertainties with the user before starting implementation.
+- **Persist important context**: User preferences, lessons learned, and behavioral guidelines that should survive across sessions must be written into `CLAUDE.md` or `knowledge/`. If something would be lost when a new context starts, save it now.
+- **Proactive communication**: If unsure about something, or have suggestions (e.g., new knowledge categories, workflow improvements), proactively discuss with the user rather than staying silent.
 
 ## Knowledge Base
 
-The `knowledge/` directory contains accumulated project knowledge that persists across sessions. **Always search this directory first** when debugging issues or investigating architecture questions — it may already contain the answer.
+The `knowledge/` directory contains accumulated project knowledge that persists across sessions.
 
 ```
 knowledge/
@@ -84,7 +86,12 @@ knowledge/
 └── architecture/   # System architecture notes (call chains, evaluation pipelines, etc.)
 ```
 
-When resolving a new issue or completing an investigation, add findings to the appropriate subdirectory for future reference.
+### Knowledge base rules (MUST follow)
+
+1. **Read when relevant**: Before debugging, benchmarking, or investigating an issue, judge whether `knowledge/` likely has useful prior findings. If so, search the relevant subdirectory (e.g., `knowledge/debug/` for bugs, `knowledge/benchmarks/` for perf data). Don't read everything blindly — use judgment on what's relevant.
+2. **Write after work**: After completing any debugging, benchmarking, architecture investigation, or significant implementation, proactively write findings to the appropriate `knowledge/` subdirectory. Do NOT wait for the user to remind you.
+3. **What to record**: Bug root causes and fixes, benchmark results, API/library quirks discovered, architectural decisions and rationale, workload parameter analysis, any insight that would save time if encountered again.
+4. **Update existing files**: If new information relates to an existing knowledge file, update that file rather than creating a new one.
 
 ## Architecture Notes
 
