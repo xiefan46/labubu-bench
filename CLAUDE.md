@@ -72,6 +72,20 @@ python scripts/pack_solution.py              # pack for submission
 - **setup.sh must be re-entrant**: Any modification to `setup.sh` must ensure the script can be run multiple times safely. Use existence checks (`if [ ! -d ... ]`, `if ! conda env list | grep -q ...`, etc.) to skip already-completed steps.
 - **Ask before implementing**: For complex analysis, design, or coding tasks, clarify any uncertainties with the user before starting implementation.
 
+## Knowledge Base
+
+The `knowledge/` directory contains accumulated project knowledge that persists across sessions. **Always search this directory first** when debugging issues or investigating architecture questions — it may already contain the answer.
+
+```
+knowledge/
+├── debug/          # Project-specific error records and solutions (e.g., tolerance mismatches, JIT timeouts)
+├── papers/         # Key research papers (DeepSeek V3, FlashInfer, etc.)
+├── benchmarks/     # Performance results and comparison data across configurations
+└── architecture/   # System architecture notes (call chains, evaluation pipelines, etc.)
+```
+
+When resolving a new issue or completing an investigation, add findings to the appropriate subdirectory for future reference.
+
 ## Architecture Notes
 
 - FlashInfer uses a **JIT compilation** model — CUDA kernels are compiled on first use, not at install time. Header templates live in `include/flashinfer/`, Python bindings in `csrc/`.
