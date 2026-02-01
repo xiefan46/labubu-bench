@@ -278,8 +278,12 @@ def run(
     )
 
     # --- Step 8: SwiGLU activation ---
+    # Reference does silu(second_half) * first_half, but sgl_kernel's
+    # silu_and_mul computes silu(first_half) * second_half.
+    # Swap the two halves to match the reference order.
+    c1_swapped = torch.cat([c1[:, n:], c1[:, :n]], dim=1)
     intermediate = torch.empty((m * topk, n), device=device, dtype=torch.bfloat16)
-    silu_and_mul(c1, intermediate)
+    silu_and_mul(c1_swapped, intermediate)
 
     # --- Step 9: Quantize intermediate to FP8 for GEMM2 ---
     intermediate_q, a2_scale = _per_token_group_quant_fp8(intermediate, BLOCK)
