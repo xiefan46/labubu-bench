@@ -46,7 +46,6 @@ conda activate fi-bench
 
 # ---------- Python packages ----------
 step "Installing Python packages"
-pip install flashinfer-python   # requires CUDA, SM80+ (A100/H100/B200)
 pip install safetensors torch
 
 # ---------- Git LFS ----------
@@ -67,9 +66,10 @@ mkdir -p projects
 cd projects
 
 if [ ! -d flashinfer ]; then
-    git clone https://github.com/xiefan46/flashinfer.git
+    git clone --recursive https://github.com/xiefan46/flashinfer.git
     cd flashinfer && git remote add upstream https://github.com/flashinfer-ai/flashinfer.git && cd ..
 fi
+cd flashinfer && git checkout feat/cutedsl-fp8-moe && git submodule update --init --recursive && pip install --no-build-isolation -e . -v && cd ..
 
 if [ ! -d flashinfer-bench ]; then
     git clone https://github.com/xiefan46/flashinfer-bench.git
