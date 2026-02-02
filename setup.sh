@@ -22,6 +22,8 @@ RESET='\033[0m'
 
 step() { echo -e "\n${BOLD}${CYAN}=> $1${RESET}"; }
 
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
 # ---------- Miniconda (parallel to labubu-bench) ----------
 step "Installing Miniconda"
 if [ ! -d ../miniconda3 ]; then
@@ -85,7 +87,7 @@ pip install sgl-kernel
 
 # ---------- Patch: fix flashinfer_moe solution bugs in flashinfer-trace ----------
 step "Patching flashinfer-trace dataset"
-MOE_SOL_DIR="$(cd .. && pwd)/flashinfer-trace/solutions/moe/moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048"
+MOE_SOL_DIR="$REPO_ROOT/flashinfer-trace/solutions/moe/moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048"
 if [ -f "$MOE_SOL_DIR/flashinfer_wrapper_9sdjf3.json" ]; then
     python3 << PATCH_EOF
 import json, re
@@ -125,7 +127,7 @@ fi
 
 # ---------- Pack & copy custom solutions to flashinfer-trace dataset ----------
 step "Packing custom solutions"
-REPO_SOL_DIR="$(cd .. && pwd)/labubu-bench/solutions"
+REPO_SOL_DIR="$REPO_ROOT/solutions"
 if [ -d "$REPO_SOL_DIR" ]; then
     find "$REPO_SOL_DIR" -name 'pack_solution.py' | while read pack_script; do
         pack_dir="$(dirname "$pack_script")"
@@ -139,7 +141,7 @@ if [ -d "$REPO_SOL_DIR" ]; then
     find "$REPO_SOL_DIR" -name '*.json' | while read src; do
         # Mirror the directory structure: solutions/moe/def_name/sol.json -> flashinfer-trace/solutions/moe/def_name/sol.json
         rel="${src#$REPO_SOL_DIR/}"
-        dst="$(cd .. && pwd)/flashinfer-trace/solutions/$rel"
+        dst="$REPO_ROOT/flashinfer-trace/solutions/$rel"
         mkdir -p "$(dirname "$dst")"
         cp -f "$src" "$dst"
         echo "Copied: $rel"
@@ -149,7 +151,7 @@ else
 fi
 
 # ---------- Export FIB_DATASET_PATH to .bashrc ----------
-FIB_DATASET_PATH="$(cd .. && pwd)/flashinfer-trace"
+FIB_DATASET_PATH="$REPO_ROOT/flashinfer-trace"
 if ! grep -q "FIB_DATASET_PATH" ~/.bashrc 2>/dev/null; then
     echo "export FIB_DATASET_PATH=\"$FIB_DATASET_PATH\"" >> ~/.bashrc
 fi
