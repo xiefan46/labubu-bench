@@ -1,0 +1,30 @@
+[common]
+definition = "moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048"
+author = "sglang"
+
+[variants.sglang_v1]
+name = "sglang_fp8_blockwise_moe_v1"
+description = "V1: torch.cat SwiGLU swap + PyTorch FP8 quant + 1GB workspace."
+source_dir = "sglang_v1"
+language = "python"
+entry_point = "main.py::run"
+dependencies = ["sgl_kernel"]
+destination_passing_style = false
+
+[variants.sglang_v2]
+name = "sglang_fp8_blockwise_moe_v2"
+description = "V2: Zero-copy PyTorch SwiGLU + sgl_kernel native FP8 quant + 90KB workspace."
+source_dir = "sglang_v2"
+language = "python"
+entry_point = "main.py::run"
+dependencies = ["sgl_kernel"]
+destination_passing_style = false
+
+[variants.triton_fused]
+name = "triton_fused_moe_v1"
+description = "Triton fused MoE: 6 kernel launches with fused scatter, SwiGLU+quant, gather. GEMM via sgl_kernel."
+source_dir = "triton_fused"
+language = "python"
+entry_point = "main.py::run"
+dependencies = ["sgl_kernel", "triton"]
+destination_passing_style = false

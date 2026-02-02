@@ -123,9 +123,18 @@ else:
 PATCH_EOF
 fi
 
-# ---------- Copy custom solutions to flashinfer-trace dataset ----------
-step "Copying custom solutions"
+# ---------- Pack & copy custom solutions to flashinfer-trace dataset ----------
+step "Packing custom solutions"
 REPO_SOL_DIR="$(cd .. && pwd)/labubu-bench/solutions"
+if [ -d "$REPO_SOL_DIR" ]; then
+    find "$REPO_SOL_DIR" -name 'pack_solution.py' | while read pack_script; do
+        pack_dir="$(dirname "$pack_script")"
+        echo "Packing: $pack_script"
+        (cd "$pack_dir" && python pack_solution.py --all)
+    done
+fi
+
+step "Copying custom solutions"
 if [ -d "$REPO_SOL_DIR" ]; then
     find "$REPO_SOL_DIR" -name '*.json' | while read src; do
         # Mirror the directory structure: solutions/moe/def_name/sol.json -> flashinfer-trace/solutions/moe/def_name/sol.json
