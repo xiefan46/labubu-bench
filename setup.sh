@@ -125,6 +125,13 @@ else:
 PATCH_EOF
 fi
 
+# ---------- Clear flashinfer-bench solution cache ----------
+step "Clearing solution build cache"
+if [ -d ~/.cache/flashinfer_bench/cache/python ]; then
+    rm -rf ~/.cache/flashinfer_bench/cache/python/fib_python_*
+    echo "Cleared python solution cache"
+fi
+
 # ---------- Pack & copy custom solutions to flashinfer-trace dataset ----------
 step "Packing custom solutions"
 REPO_SOL_DIR="$REPO_ROOT/solutions"
