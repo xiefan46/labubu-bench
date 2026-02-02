@@ -46,7 +46,7 @@ conda activate fi-bench
 
 # ---------- Python packages ----------
 step "Installing Python packages"
-pip install safetensors torch
+pip install safetensors torch pytest
 
 # ---------- Git LFS ----------
 step "Installing Git LFS"
