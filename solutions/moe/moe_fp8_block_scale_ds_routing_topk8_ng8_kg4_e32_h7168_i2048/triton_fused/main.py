@@ -152,6 +152,7 @@ def run(
         c1.stride(0),
         intermediate_q.stride(0),
         a2_scale.stride(0),
+        FP8_MAX=448.0,
         GROUP_SIZE=BLOCK,
         BLOCK_N=BLOCK,
     )

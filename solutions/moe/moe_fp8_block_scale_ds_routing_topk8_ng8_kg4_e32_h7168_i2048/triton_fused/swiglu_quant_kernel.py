@@ -14,9 +14,6 @@ import triton
 import triton.language as tl
 
 
-FP8_MAX: tl.constexpr = 448.0
-
-
 @triton.jit
 def swiglu_quant_kernel(
     c1_ptr,
@@ -27,6 +24,7 @@ def swiglu_quant_kernel(
     stride_c1_m,
     stride_out_m,
     stride_scale_m,
+    FP8_MAX: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
