@@ -37,12 +37,3 @@ language = "python"
 entry_point = "main.py::run"
 dependencies = ["sgl_kernel", "triton"]
 destination_passing_style = false
-
-[variants.sglang_fused_v3]
-name = "sglang_fused_moe_v3"
-description = "SGLang fused MoE v3: sgl_kernel native CUDA fused SwiGLU+FP8 quant, with buffer pre-allocation. No Triton dependency."
-source_dir = "sglang_fused_v3"
-language = "python"
-entry_point = "main.py::run"
-dependencies = ["sgl_kernel"]
-destination_passing_style = false
