@@ -28,3 +28,12 @@ language = "python"
 entry_point = "main.py::run"
 dependencies = ["sgl_kernel", "triton"]
 destination_passing_style = false
+
+[variants.triton_fused_v2]
+name = "triton_fused_moe_v2"
+description = "Triton fused MoE v2: same kernels as v1 with module-level buffer pre-allocation to eliminate per-call torch.empty overhead."
+source_dir = "triton_fused_v2"
+language = "python"
+entry_point = "main.py::run"
+dependencies = ["sgl_kernel", "triton"]
+destination_passing_style = false
