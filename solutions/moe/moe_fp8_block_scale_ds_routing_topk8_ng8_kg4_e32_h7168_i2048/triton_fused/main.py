@@ -24,8 +24,8 @@ from sgl_kernel import (
     shuffle_rows,
 )
 
-from routing import route_tokens
-from swiglu_quant_kernel import swiglu_quant_kernel
+from .routing import route_tokens
+from .swiglu_quant_kernel import swiglu_quant_kernel
 
 # Fixed DeepSeek-V3/R1 geometry
 E_LOCAL = 32
