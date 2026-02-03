@@ -23,6 +23,7 @@ def run(
     gemm2_weights_scale: torch.Tensor,
     local_expert_offset: int,
     routed_scaling_factor: float,
+    output: torch.Tensor = None,
 ):
     seq_len, num_experts = routing_logits.shape
     local_num_experts = gemm1_weights.shape[0]
@@ -57,4 +58,5 @@ def run(
         topk_group=TOPK_GROUP,
         intermediate_size=INTERMEDIATE_SIZE,
         routed_scaling_factor=routed_scaling_factor,
+        output=output,
     )
