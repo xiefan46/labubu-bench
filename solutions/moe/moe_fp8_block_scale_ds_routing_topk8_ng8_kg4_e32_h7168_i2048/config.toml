@@ -37,3 +37,11 @@ language = "python"
 entry_point = "main.py::run"
 dependencies = ["sgl_kernel", "triton"]
 destination_passing_style = false
+
+[variants.cutedsl]
+name = "cutedsl_moe_fp8"
+description = "CuTeDSL FP8 MoE pipeline on Blackwell SM100+: Routing → GEMM1 → SwiGLU+Requant → GEMM2 → Finalize"
+source_dir = "cutedsl"
+language = "python"
+entry_point = "main.py::run"
+dependencies = ["flashinfer"]
