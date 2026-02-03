@@ -313,10 +313,6 @@ def main():
           f"cosine_sim={F.cosine_similarity(cutedsl_out.float().flatten(), sglang_out.float().flatten(), dim=0).item():.6f}")
 
     # ── Per-stage timing ──
-    print(f"\n=== Per-Stage Timing ({args.iters} iters, median ms) ===")
-    print(f"{'Stage':<24} {'CuTeDSL':>10} {'SGLang v2':>10} {'Ratio':>8}")
-    print("-" * 56)
-
     ITERS = args.iters
 
     # Prepare CuTeDSL routing result + workspace (for stages 2-5)
@@ -335,6 +331,9 @@ def main():
     s_routing = sglang_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T)
     s_topk_weights, s_topk_ids, s_expert_offsets, s_ps1, s_ps2, s_a_map, s_c_map = s_routing
 
+    # Collect all stage timings: list of (name, cd_time, sg_time)
+    stage_timings = []
+
     # Stage 1: Routing
     cd_t = cuda_time(
         lambda: cutedsl_stage1_routing(routing_logits, routing_bias, routed_scaling_factor),
@@ -344,7 +343,7 @@ def main():
         lambda: sglang_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T),
         iters=ITERS,
     )
-    print(f"{'1. Routing':<24} {cd_t:>9.3f}  {sg_t:>9.3f}  {cd_t/sg_t:>7.2f}x")
+    stage_timings.append(("1. Routing", cd_t, sg_t))
 
     # Stage 2: GEMM1
     try:
@@ -368,8 +367,7 @@ def main():
         ),
         iters=ITERS,
     )
-    ratio_str = f"{cd_t/sg_t:>7.2f}x" if cd_t == cd_t else "   N/A"
-    print(f"{'2. GEMM1':<24} {cd_t:>9.3f}  {sg_t:>9.3f}  {ratio_str}")
+    stage_timings.append(("2. GEMM1", cd_t, sg_t))
 
     # Stage 3: SwiGLU + Requant
     if g1_out is not None:
@@ -385,8 +383,7 @@ def main():
     s_act_result = sglang_stage3_swiglu_requant(s_c1)
     s_int_q, s_a2_scale = s_act_result
     sg_t = cuda_time(lambda: sglang_stage3_swiglu_requant(s_c1), iters=ITERS)
-    ratio_str = f"{cd_t/sg_t:>7.2f}x" if cd_t == cd_t else "   N/A"
-    print(f"{'3. SwiGLU+Requant':<24} {cd_t:>9.3f}  {sg_t:>9.3f}  {ratio_str}")
+    stage_timings.append(("3. SwiGLU+Requant", cd_t, sg_t))
 
     # Stage 4: GEMM2
     if a_out is not None:
@@ -414,8 +411,7 @@ def main():
         ),
         iters=ITERS,
     )
-    ratio_str = f"{cd_t/sg_t:>7.2f}x" if cd_t == cd_t else "   N/A"
-    print(f"{'4. GEMM2':<24} {cd_t:>9.3f}  {sg_t:>9.3f}  {ratio_str}")
+    stage_timings.append(("4. GEMM2", cd_t, sg_t))
 
     # Stage 5: Finalize
     if g2_out is not None:
@@ -427,15 +423,12 @@ def main():
         lambda: sglang_stage5_finalize(s_g2, s_c_map, s_topk_weights, T, device),
         iters=ITERS,
     )
-    ratio_str = f"{cd_t/sg_t:>7.2f}x" if cd_t == cd_t else "   N/A"
-    print(f"{'5. Finalize':<24} {cd_t:>9.3f}  {sg_t:>9.3f}  {ratio_str}")
+    stage_timings.append(("5. Finalize", cd_t, sg_t))
 
     # Workspace alloc overhead (CuTeDSL only)
     alloc_t = cuda_time(lambda: allocate_moe_workspace(mp, H, I, device), iters=ITERS)
-    print(f"{'   Workspace alloc':<24} {alloc_t:>9.3f}  {'---':>9}  {'':>8}")
 
     # End-to-end
-    print("-" * 56)
     cd_e2e = cuda_time(
         lambda: cutedsl_fp8_moe(
             routing_logits, routing_bias, hidden_states, hs_scale,
@@ -456,7 +449,30 @@ def main():
         return sglang_stage5_finalize(g2, r[6], r[0], T, device)
 
     sg_e2e = cuda_time(sglang_e2e, iters=ITERS)
-    print(f"{'End-to-end':<24} {cd_e2e:>9.3f}  {sg_e2e:>9.3f}  {cd_e2e/sg_e2e:>7.2f}x")
+
+    # ── Print results with percentage columns ──
+    # Compute totals from per-stage sums (excluding NaN)
+    cd_stage_total = sum(t for _, t, _ in stage_timings if t == t)  # NaN != NaN
+    sg_stage_total = sum(t for _, _, t in stage_timings)
+
+    print(f"\n=== Per-Stage Timing ({ITERS} iters, median ms) ===")
+    print(f"{'Stage':<24} {'CuTeDSL':>8} {'%':>6} {'SGLang v2':>10} {'%':>6} {'Ratio':>8}")
+    print("-" * 68)
+
+    for name, cd, sg in stage_timings:
+        cd_pct = f"{cd / cd_stage_total * 100:5.1f}%" if cd == cd and cd_stage_total > 0 else "  N/A"
+        sg_pct = f"{sg / sg_stage_total * 100:5.1f}%" if sg_stage_total > 0 else "  N/A"
+        ratio_str = f"{cd/sg:>7.2f}x" if cd == cd else "   N/A"
+        cd_str = f"{cd:>8.3f}" if cd == cd else "     N/A"
+        print(f"{name:<24} {cd_str} {cd_pct:>6} {sg:>10.3f} {sg_pct:>6} {ratio_str}")
+
+    print(f"{'   Workspace alloc':<24} {alloc_t:>8.3f} {'':>6} {'---':>10} {'':>6} {'':>8}")
+
+    print("-" * 68)
+    cd_e2e_pct = f"{cd_e2e / cd_e2e * 100:5.1f}%" if cd_e2e == cd_e2e else "  N/A"
+    sg_e2e_pct = f"{sg_e2e / sg_e2e * 100:5.1f}%" if sg_e2e > 0 else "  N/A"
+    print(f"{'End-to-end':<24} {cd_e2e:>8.3f} {'':>6} {sg_e2e:>10.3f} {'':>6} {cd_e2e/sg_e2e:>7.2f}x")
+    print(f"{'Sum of stages':<24} {cd_stage_total:>8.3f} {'':>6} {sg_stage_total:>10.3f} {'':>6}")
 
 
 if __name__ == "__main__":
