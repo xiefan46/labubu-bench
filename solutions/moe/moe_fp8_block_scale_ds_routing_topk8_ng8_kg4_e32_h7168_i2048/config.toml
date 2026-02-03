@@ -53,3 +53,11 @@ source_dir = "cutedsl_v2"
 language = "python"
 entry_point = "main.py::run"
 dependencies = ["flashinfer"]
+
+[variants.cutedsl_v3]
+name = "cutedsl_moe_fp8_v3"
+description = "CuTeDSL FP8 MoE v3: flat 2D A/C with 128-aligned m_indptr (aligned with trtllm architecture). Less memory for skewed routing."
+source_dir = "cutedsl_v3"
+language = "python"
+entry_point = "main.py::run"
+dependencies = ["flashinfer"]
