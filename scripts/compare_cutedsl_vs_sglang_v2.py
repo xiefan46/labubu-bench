@@ -84,7 +84,7 @@ def make_inputs(T, device):
     """
     routing_logits = torch.randn(T, E_GLOBAL, dtype=torch.float32, device=device)
     # Boost local expert logits so routing selects them
-    routing_logits[:, :E_LOCAL] += 5.0
+    routing_logits[:, :E_LOCAL] += 20.0
     routing_bias = torch.randn(E_GLOBAL, dtype=torch.bfloat16, device=device)
     hidden_states = torch.randn(T, H, device=device).to(torch.float8_e4m3fn)
     hs_scale = torch.randn(H // BLOCK, T, dtype=torch.float32, device=device).abs() + 0.01
