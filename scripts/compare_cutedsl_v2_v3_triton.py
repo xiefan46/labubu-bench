@@ -43,7 +43,6 @@ from sgl_kernel import (
     fp8_blockwise_scaled_grouped_mm,
     moe_fused_gate,
     prepare_moe_input,
-    sgl_per_token_group_quant_fp8,
     shuffle_rows,
 )
 
@@ -109,12 +108,72 @@ def make_inputs(T, device):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Triton v2 — stage decomposition
+# Triton v2 — pre-allocated buffers + stage decomposition
+# Mirrors triton_fused_v2/main.py: module-level buffer caching
+# to eliminate per-call torch.empty overhead.
 # ═══════════════════════════════════════════════════════════════════
+
+# Module-level buffer caches (same pattern as real triton_fused_v2 solution)
+_tr_static = {}   # device -> dict of fixed-shape buffers
+_tr_dynamic = {}  # (M, device) -> dict of M-dependent buffers
+
+
+def _tr_init_static(device):
+    """Allocate all fixed-shape buffers (independent of M)."""
+    s = {}
+    s["ab_strides1"] = torch.full((E_LOCAL,), H, device=device, dtype=torch.int64)
+    s["c_strides1"] = torch.full((E_LOCAL,), 2 * I, device=device, dtype=torch.int64)
+    s["ab_strides2"] = torch.full((E_LOCAL,), I, device=device, dtype=torch.int64)
+    s["c_strides2"] = torch.full((E_LOCAL,), H, device=device, dtype=torch.int64)
+    s["workspace"] = torch.empty(90000, device=device, dtype=torch.uint8)
+    s["a_ptrs"] = torch.empty((E_LOCAL,), dtype=torch.int64, device=device)
+    s["b_ptrs"] = torch.empty((E_LOCAL,), dtype=torch.int64, device=device)
+    s["out_ptrs"] = torch.empty((E_LOCAL,), dtype=torch.int64, device=device)
+    s["a_scales_ptrs"] = torch.empty((E_LOCAL,), dtype=torch.int64, device=device)
+    s["b_scales_ptrs"] = torch.empty((E_LOCAL,), dtype=torch.int64, device=device)
+    s["a_sf_layout"] = torch.empty((E_LOCAL, 5), dtype=torch.int32, device=device)
+    s["w_sf_layout"] = torch.empty((E_LOCAL, 5), dtype=torch.int32, device=device)
+    s["expert_offsets"] = torch.empty((E_LOCAL + 1,), dtype=torch.int32, device=device)
+    s["problem_sizes1"] = torch.empty((E_LOCAL, 3), dtype=torch.int32, device=device)
+    s["problem_sizes2"] = torch.empty((E_LOCAL, 3), dtype=torch.int32, device=device)
+    return s
+
+
+def _tr_get_static(device):
+    if device not in _tr_static:
+        _tr_static[device] = _tr_init_static(device)
+    return _tr_static[device]
+
+
+def _tr_init_dynamic(M, device):
+    """Allocate all M-dependent buffers."""
+    d = {}
+    MT = M * TOP_K
+    d["a_map"] = torch.empty((MT,), dtype=torch.int32, device=device)
+    d["c_map"] = torch.empty((MT,), dtype=torch.int32, device=device)
+    d["c1"] = torch.empty((MT, 2 * I), device=device, dtype=torch.bfloat16)
+    d["intermediate_q"] = torch.empty((MT, I), device=device, dtype=torch.float8_e4m3fn)
+    d["a2_scale"] = torch.empty((MT, I // BLOCK), dtype=torch.float32, device=device)
+    d["c2"] = torch.empty((MT, H), device=device, dtype=torch.bfloat16)
+    d["output"] = torch.zeros((M, H), device=device, dtype=torch.bfloat16)
+    return d
+
+
+def _tr_get_dynamic(M, device):
+    key = (M, device)
+    if key not in _tr_dynamic:
+        _tr_dynamic[key] = _tr_init_dynamic(M, device)
+    return _tr_dynamic[key]
 
 
 def triton_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T):
-    """Stage 1: Routing (moe_fused_gate + local masking + prepare_moe_input)."""
+    """Stage 1: Routing (moe_fused_gate + local masking + prepare_moe_input).
+
+    Uses pre-allocated buffers for expert_offsets, problem_sizes, a_map, c_map.
+    """
+    s = _tr_get_static(device)
+    d = _tr_get_dynamic(T, device)
+
     topk_weights, topk_ids = moe_fused_gate(
         routing_logits.to(torch.float32).contiguous(),
         routing_bias.to(torch.float32).contiguous(),
@@ -130,109 +189,87 @@ def triton_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, d
     topk_weights = topk_weights * local_mask.to(topk_weights.dtype)
     topk_ids = local_ids.to(torch.int32)
 
-    expert_offsets = torch.empty((E_LOCAL + 1,), dtype=torch.int32, device=device)
-    problem_sizes1 = torch.empty((E_LOCAL, 3), dtype=torch.int32, device=device)
-    problem_sizes2 = torch.empty((E_LOCAL, 3), dtype=torch.int32, device=device)
-    a_map = torch.empty((T * TOP_K,), dtype=torch.int32, device=device)
-    c_map = torch.empty((T * TOP_K,), dtype=torch.int32, device=device)
-
     prepare_moe_input(
-        topk_ids, expert_offsets, problem_sizes1, problem_sizes2,
-        a_map, c_map, E_LOCAL, I, H,
+        topk_ids, s["expert_offsets"], s["problem_sizes1"], s["problem_sizes2"],
+        d["a_map"], d["c_map"], E_LOCAL, I, H,
     )
-    return topk_weights, topk_ids, expert_offsets, problem_sizes1, problem_sizes2, a_map, c_map
+    return topk_weights, topk_ids
 
 
-def triton_stage2_gemm1(hidden_states, hs_scale, g1w, g1ws, a_map, problem_sizes1, expert_offsets, T, device):
-    """Stage 2: GEMM1 (shuffle_rows + grouped GEMM)."""
+def triton_stage2_gemm1(hidden_states, hs_scale, g1w, g1ws, T, device):
+    """Stage 2: GEMM1 (shuffle_rows + grouped GEMM). Pre-allocated buffers."""
+    s = _tr_get_static(device)
+    d = _tr_get_dynamic(T, device)
+
     a_scale = hs_scale.to(torch.float32).T.contiguous()
-    rep_a_q = shuffle_rows(hidden_states.contiguous(), a_map, (T * TOP_K, H))
-    rep_a_scales = shuffle_rows(a_scale, a_map, (T * TOP_K, H // BLOCK))
+    rep_a_q = shuffle_rows(hidden_states.contiguous(), d["a_map"], (T * TOP_K, H))
+    rep_a_scales = shuffle_rows(a_scale, d["a_map"], (T * TOP_K, H // BLOCK))
 
     w1_q = g1w.transpose(1, 2)
     w1_scale = g1ws.to(torch.float32).transpose(1, 2)
 
-    ab_strides1 = torch.full((E_LOCAL,), H, device=device, dtype=torch.int64)
-    c_strides1 = torch.full((E_LOCAL,), 2 * I, device=device, dtype=torch.int64)
-
-    workspace = torch.empty(90000, device=device, dtype=torch.uint8)
-    a_ptrs = torch.empty((E_LOCAL,), dtype=torch.int64, device=device)
-    b_ptrs = torch.empty((E_LOCAL,), dtype=torch.int64, device=device)
-    out_ptrs = torch.empty((E_LOCAL,), dtype=torch.int64, device=device)
-    a_scales_ptrs = torch.empty((E_LOCAL,), dtype=torch.int64, device=device)
-    b_scales_ptrs = torch.empty((E_LOCAL,), dtype=torch.int64, device=device)
-    a_sf_layout = torch.empty((E_LOCAL, 5), dtype=torch.int32, device=device)
-    w_sf_layout = torch.empty((E_LOCAL, 5), dtype=torch.int32, device=device)
-
-    c1 = torch.empty((T * TOP_K, 2 * I), device=device, dtype=torch.bfloat16)
     fp8_blockwise_scaled_grouped_mm(
-        c1,
-        a_ptrs, b_ptrs, out_ptrs, a_scales_ptrs, b_scales_ptrs,
+        d["c1"],
+        s["a_ptrs"], s["b_ptrs"], s["out_ptrs"],
+        s["a_scales_ptrs"], s["b_scales_ptrs"],
         rep_a_q, w1_q, rep_a_scales, w1_scale,
-        ab_strides1, ab_strides1, c_strides1,
-        a_sf_layout, w_sf_layout,
-        problem_sizes1, expert_offsets[:-1],
-        workspace,
+        s["ab_strides1"], s["ab_strides1"], s["c_strides1"],
+        s["a_sf_layout"], s["w_sf_layout"],
+        s["problem_sizes1"], s["expert_offsets"][:-1],
+        s["workspace"],
     )
-    return c1, workspace, a_ptrs, b_ptrs, out_ptrs, a_scales_ptrs, b_scales_ptrs, a_sf_layout, w_sf_layout
+    return d["c1"]
 
 
-def triton_stage3_swiglu_requant(c1):
-    """Stage 3: SwiGLU + FP8 requant (Triton kernel)."""
-    M_total = c1.shape[0]
-    intermediate_q = torch.empty(
-        (M_total, I), device=c1.device, dtype=torch.float8_e4m3fn
-    )
-    a2_scale = torch.empty(
-        (M_total, I // BLOCK), dtype=torch.float32, device=c1.device
-    )
+def triton_stage3_swiglu_requant(c1, T, device):
+    """Stage 3: SwiGLU + FP8 requant (Triton kernel). Pre-allocated buffers."""
+    d = _tr_get_dynamic(T, device)
+    M_total = T * TOP_K
+
     grid = (M_total,)
     swiglu_quant_kernel[grid](
         c1,
-        intermediate_q,
-        a2_scale,
+        d["intermediate_q"],
+        d["a2_scale"],
         M_total,
         I,
         c1.stride(0),
-        intermediate_q.stride(0),
-        a2_scale.stride(0),
+        d["intermediate_q"].stride(0),
+        d["a2_scale"].stride(0),
         FP8_MAX=448.0,
         GROUP_SIZE=BLOCK,
         BLOCK_N=BLOCK,
     )
-    return intermediate_q, a2_scale
+    return d["intermediate_q"], d["a2_scale"]
 
 
-def triton_stage4_gemm2(
-    intermediate_q, a2_scale, g2w, g2ws, problem_sizes2, expert_offsets,
-    workspace, a_ptrs, b_ptrs, out_ptrs, a_scales_ptrs, b_scales_ptrs,
-    a_sf_layout, w_sf_layout, T, device,
-):
-    """Stage 4: GEMM2."""
+def triton_stage4_gemm2(intermediate_q, a2_scale, g2w, g2ws, T, device):
+    """Stage 4: GEMM2. Pre-allocated buffers."""
+    s = _tr_get_static(device)
+    d = _tr_get_dynamic(T, device)
+
     w2_q = g2w.transpose(1, 2)
     w2_scale = g2ws.to(torch.float32).transpose(1, 2)
 
-    ab_strides2 = torch.full((E_LOCAL,), I, device=device, dtype=torch.int64)
-    c_strides2 = torch.full((E_LOCAL,), H, device=device, dtype=torch.int64)
-
-    c2 = torch.empty((T * TOP_K, H), device=device, dtype=torch.bfloat16)
     fp8_blockwise_scaled_grouped_mm(
-        c2,
-        a_ptrs, b_ptrs, out_ptrs, a_scales_ptrs, b_scales_ptrs,
+        d["c2"],
+        s["a_ptrs"], s["b_ptrs"], s["out_ptrs"],
+        s["a_scales_ptrs"], s["b_scales_ptrs"],
         intermediate_q, w2_q, a2_scale, w2_scale,
-        ab_strides2, ab_strides2, c_strides2,
-        a_sf_layout, w_sf_layout,
-        problem_sizes2, expert_offsets[:-1],
-        workspace,
+        s["ab_strides2"], s["ab_strides2"], s["c_strides2"],
+        s["a_sf_layout"], s["w_sf_layout"],
+        s["problem_sizes2"], s["expert_offsets"][:-1],
+        s["workspace"],
     )
-    return c2
+    return d["c2"]
 
 
-def triton_stage5_finalize(c2, c_map, topk_weights, T, device):
-    """Stage 5: Weighted reduce."""
-    output = torch.zeros((T, H), device=device, dtype=torch.bfloat16)
-    apply_shuffle_mul_sum(c2, output, c_map, topk_weights.to(torch.bfloat16))
-    return output
+def triton_stage5_finalize(topk_weights, T, device):
+    """Stage 5: Weighted reduce. Pre-allocated buffers."""
+    d = _tr_get_dynamic(T, device)
+    d["output"].zero_()
+    apply_shuffle_mul_sum(d["c2"], d["output"], d["c_map"], topk_weights.to(torch.bfloat16))
+    return d["output"]
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -363,11 +400,11 @@ def main():
     torch.cuda.synchronize()
     print(f"CuTeDSL v3 first call: {time.time() - t0:.2f}s")
 
-    # Triton v2 warmup
+    # Triton v2 warmup (also initializes pre-allocated buffers)
     t0 = time.time()
-    tr_rt = triton_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T)
-    tr_g1 = triton_stage2_gemm1(hidden_states, hs_scale, g1w, g1ws, tr_rt[5], tr_rt[3], tr_rt[2], T, device)
-    triton_stage3_swiglu_requant(tr_g1[0])
+    tr_topk_w, tr_topk_i = triton_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T)
+    tr_c1 = triton_stage2_gemm1(hidden_states, hs_scale, g1w, g1ws, T, device)
+    triton_stage3_swiglu_requant(tr_c1, T, device)
     torch.cuda.synchronize()
     print(f"Triton v2 first call: {time.time() - t0:.2f}s")
 
@@ -391,9 +428,8 @@ def main():
     # Prepare v2 workspace
     ws = allocate_moe_workspace(mp, H, I, device)
 
-    # Prepare Triton routing result
-    tr_routing = triton_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T)
-    tr_topk_weights, tr_topk_ids, tr_expert_offsets, tr_ps1, tr_ps2, tr_a_map, tr_c_map = tr_routing
+    # Prepare Triton routing result (populates pre-allocated buffers)
+    tr_topk_weights, _ = triton_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T)
 
     # Collect stage timings: list of (name, v2_time, v3_time, triton_time)
     stage_timings = []
@@ -428,15 +464,10 @@ def main():
         iters=ITERS,
     )
 
-    # Triton v2
-    tr_gemm1_result = triton_stage2_gemm1(
-        hidden_states, hs_scale, g1w, g1ws, tr_a_map, tr_ps1, tr_expert_offsets, T, device,
-    )
-    tr_c1 = tr_gemm1_result[0]
+    # Triton v2 (pre-allocated buffers)
+    tr_c1 = triton_stage2_gemm1(hidden_states, hs_scale, g1w, g1ws, T, device)
     tr_t = cuda_time(
-        lambda: triton_stage2_gemm1(
-            hidden_states, hs_scale, g1w, g1ws, tr_a_map, tr_ps1, tr_expert_offsets, T, device,
-        ),
+        lambda: triton_stage2_gemm1(hidden_states, hs_scale, g1w, g1ws, T, device),
         iters=ITERS,
     )
     stage_timings.append(("2. GEMM1", v2_t, v3_t, tr_t))
@@ -456,10 +487,9 @@ def main():
         iters=ITERS,
     )
 
-    # Triton v2
-    tr_act_result = triton_stage3_swiglu_requant(tr_c1)
-    tr_int_q, tr_a2_scale = tr_act_result
-    tr_t = cuda_time(lambda: triton_stage3_swiglu_requant(tr_c1), iters=ITERS)
+    # Triton v2 (pre-allocated buffers)
+    tr_int_q, tr_a2_scale = triton_stage3_swiglu_requant(tr_c1, T, device)
+    tr_t = cuda_time(lambda: triton_stage3_swiglu_requant(tr_c1, T, device), iters=ITERS)
     stage_timings.append(("3. SwiGLU+Requant", v2_t, v3_t, tr_t))
 
     # ── Stage 4: GEMM2 ──
@@ -477,20 +507,10 @@ def main():
         iters=ITERS,
     )
 
-    # Triton v2
-    tr_g2 = triton_stage4_gemm2(
-        tr_int_q, tr_a2_scale, g2w, g2ws, tr_ps2, tr_expert_offsets,
-        tr_gemm1_result[1], tr_gemm1_result[2], tr_gemm1_result[3],
-        tr_gemm1_result[4], tr_gemm1_result[5], tr_gemm1_result[6],
-        tr_gemm1_result[7], tr_gemm1_result[8], T, device,
-    )
+    # Triton v2 (pre-allocated buffers)
+    tr_g2 = triton_stage4_gemm2(tr_int_q, tr_a2_scale, g2w, g2ws, T, device)
     tr_t = cuda_time(
-        lambda: triton_stage4_gemm2(
-            tr_int_q, tr_a2_scale, g2w, g2ws, tr_ps2, tr_expert_offsets,
-            tr_gemm1_result[1], tr_gemm1_result[2], tr_gemm1_result[3],
-            tr_gemm1_result[4], tr_gemm1_result[5], tr_gemm1_result[6],
-            tr_gemm1_result[7], tr_gemm1_result[8], T, device,
-        ),
+        lambda: triton_stage4_gemm2(tr_int_q, tr_a2_scale, g2w, g2ws, T, device),
         iters=ITERS,
     )
     stage_timings.append(("4. GEMM2", v2_t, v3_t, tr_t))
@@ -505,9 +525,9 @@ def main():
         iters=ITERS,
     )
 
-    # Triton v2
+    # Triton v2 (pre-allocated output buffer)
     tr_t = cuda_time(
-        lambda: triton_stage5_finalize(tr_g2, tr_c_map, tr_topk_weights, T, device),
+        lambda: triton_stage5_finalize(tr_topk_weights, T, device),
         iters=ITERS,
     )
     stage_timings.append(("5. Finalize", v2_t, v3_t, tr_t))
@@ -539,14 +559,11 @@ def main():
     )
 
     def triton_e2e():
-        r = triton_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T)
-        g = triton_stage2_gemm1(hidden_states, hs_scale, g1w, g1ws, r[5], r[3], r[2], T, device)
-        a = triton_stage3_swiglu_requant(g[0])
-        g2 = triton_stage4_gemm2(
-            a[0], a[1], g2w, g2ws, r[4], r[2],
-            g[1], g[2], g[3], g[4], g[5], g[6], g[7], g[8], T, device,
-        )
-        return triton_stage5_finalize(g2, r[6], r[0], T, device)
+        tw, _ = triton_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T)
+        c1 = triton_stage2_gemm1(hidden_states, hs_scale, g1w, g1ws, T, device)
+        iq, asc = triton_stage3_swiglu_requant(c1, T, device)
+        triton_stage4_gemm2(iq, asc, g2w, g2ws, T, device)
+        return triton_stage5_finalize(tw, T, device)
 
     tr_e2e = cuda_time(triton_e2e, iters=ITERS)
 
