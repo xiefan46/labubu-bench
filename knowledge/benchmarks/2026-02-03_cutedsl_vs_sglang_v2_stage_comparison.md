@@ -54,6 +54,18 @@ After vectorization fix (was 327ms before), still 5x slower than `moe_fused_gate
 3. **Routing**: Consider using `prepare_moe_input` from sgl_kernel directly, or write a CUDA permutation kernel.
 4. **GEMM kernel perf**: Profile CuTeDSL kernel vs sgl_kernel grouped GEMM in isolation.
 
+## flashinfer-bench End-to-End Results (real workloads)
+
+All solutions PASSED correctness (rtol=0.2, atol=0.1, matched_ratio=0.85).
+
+| Solution | Speedup Range | Avg Speedup |
+|----------|--------------|-------------|
+| flashinfer_moe (trtllm) | 27.8x - 45.4x | ~37x |
+| sglang_fp8_blockwise_moe_v2 | 21.1x - 28.3x | ~25x |
+| cutedsl_moe_fp8 | 1.6x - 2.6x | ~1.9x |
+
+CuTeDSL is **~13x slower than sglang v2** and **~19x slower than trtllm** on real workloads.
+
 ## Historical Context
 
 | Version | Routing | Total | Notes |
