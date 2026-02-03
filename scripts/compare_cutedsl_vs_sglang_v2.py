@@ -27,8 +27,8 @@ from flashinfer.cute_dsl.moe_grouped_gemm_fp8 import moe_gemm1_fp8, moe_gemm2_fp
 from flashinfer.cute_dsl.moe_pipeline import (
     allocate_moe_workspace,
     cutedsl_fp8_moe,
-    moe_routing_deepseek,
 )
+from flashinfer.cute_dsl.moe_routing import moe_routing_deepseek, moe_routing_sglang
 
 # ── SGLang / sgl_kernel imports ──
 from sgl_kernel import (
@@ -260,12 +260,13 @@ def triton_stage3_swiglu_requant(c1):
 
 
 def cutedsl_stage1_routing(routing_logits, routing_bias, routed_scaling_factor):
-    """Stage 1: Routing."""
-    return moe_routing_deepseek(
+    """Stage 1: Routing (sgl_kernel backend)."""
+    return moe_routing_sglang(
         routing_logits, routing_bias,
         num_local_experts=E_LOCAL, local_expert_offset=0,
         n_group=N_GROUP, topk_group=TOPK_GROUP, top_k=TOP_K,
-        routed_scaling_factor=routed_scaling_factor, pad_to=4,
+        routed_scaling_factor=routed_scaling_factor,
+        intermediate_size=I, hidden_size=H,
     )
 
 
