@@ -47,6 +47,9 @@ conda activate fi-bench
 # ---------- Python packages ----------
 step "Installing Python packages"
 pip install safetensors torch pytest
+# Pin cuda-python to match CUDA 12.8 driver; cuda-python>=13.x causes
+# cudaErrorInsufficientDriver on machines with CUDA 12.8 drivers.
+pip install "cuda-python>=12.8,<13"
 
 # ---------- Git LFS ----------
 step "Installing Git LFS"
