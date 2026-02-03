@@ -45,3 +45,11 @@ source_dir = "cutedsl"
 language = "python"
 entry_point = "main.py::run"
 dependencies = ["flashinfer"]
+
+[variants.cutedsl_v2]
+name = "cutedsl_moe_fp8_v2"
+description = "CuTeDSL FP8 MoE v2: vectorized GEMM wrappers (searchsorted+scatter), ~192 GPU→CPU syncs eliminated. 4.1x faster than v1."
+source_dir = "cutedsl_v2"
+language = "python"
+entry_point = "main.py::run"
+dependencies = ["flashinfer"]
