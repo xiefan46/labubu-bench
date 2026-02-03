@@ -1,8 +1,8 @@
 """
 Stage-by-stage performance and precision comparison:
-  CuTeDSL MoE pipeline  vs  SGLang v2 MoE pipeline
+  CuTeDSL  vs  SGLang v2  vs  Triton v2
 
-Both pipelines are decomposed into 5 aligned stages:
+All three pipelines are decomposed into 5 aligned stages:
   1. Routing     — expert selection + index computation
   2. GEMM1       — FP8 grouped GEMM (incl. A-gather/shuffle)
   3. SwiGLU+Req  — activation + requantization
@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import sys
 import time
 
 import torch
@@ -29,7 +30,7 @@ from flashinfer.cute_dsl.moe_pipeline import (
     moe_routing_deepseek,
 )
 
-# ── SGLang imports ──
+# ── SGLang / sgl_kernel imports ──
 from sgl_kernel import (
     apply_shuffle_mul_sum,
     fp8_blockwise_scaled_grouped_mm,
@@ -38,6 +39,14 @@ from sgl_kernel import (
     sgl_per_token_group_quant_fp8,
     shuffle_rows,
 )
+
+# ── Triton v2 imports ──
+# swiglu_quant_kernel lives alongside the triton_fused_v2 solution
+sys.path.insert(
+    0,
+    "solutions/moe/moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048/triton_fused_v2",
+)
+from swiglu_quant_kernel import swiglu_quant_kernel  # noqa: E402
 
 # ── Constants (DeepSeek-V3) ──
 E_GLOBAL = 256
@@ -165,7 +174,7 @@ def sglang_stage2_gemm1(hidden_states, hs_scale, g1w, g1ws, a_map, problem_sizes
 
 
 def sglang_stage3_swiglu_requant(c1):
-    """Stage 3: SwiGLU + FP8 requant."""
+    """Stage 3: SwiGLU + FP8 requant (sgl_kernel ops)."""
     n = I
     intermediate = (F.silu(c1[:, n:]) * c1[:, :n]).to(torch.bfloat16)
     intermediate_q = torch.empty_like(intermediate, dtype=torch.float8_e4m3fn)
@@ -213,6 +222,39 @@ def sglang_stage5_finalize(c2, c_map, topk_weights, T, device):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Triton v2 — stage decomposition
+# Uses same sgl_kernel routines as SGLang v2 for routing/GEMM/finalize,
+# but has its own Triton SwiGLU+FP8 kernel.
+# ═══════════════════════════════════════════════════════════════════
+
+
+def triton_stage3_swiglu_requant(c1):
+    """Stage 3: SwiGLU + FP8 requant (Triton kernel)."""
+    M_total = c1.shape[0]
+    intermediate_q = torch.empty(
+        (M_total, I), device=c1.device, dtype=torch.float8_e4m3fn
+    )
+    a2_scale = torch.empty(
+        (M_total, I // BLOCK), dtype=torch.float32, device=c1.device
+    )
+    grid = (M_total,)
+    swiglu_quant_kernel[grid](
+        c1,
+        intermediate_q,
+        a2_scale,
+        M_total,
+        I,
+        c1.stride(0),
+        intermediate_q.stride(0),
+        a2_scale.stride(0),
+        FP8_MAX=448.0,
+        GROUP_SIZE=BLOCK,
+        BLOCK_N=BLOCK,
+    )
+    return intermediate_q, a2_scale
+
+
+# ═══════════════════════════════════════════════════════════════════
 # CuTeDSL — stage decomposition
 # ═══════════════════════════════════════════════════════════════════
 
@@ -228,7 +270,7 @@ def cutedsl_stage1_routing(routing_logits, routing_bias, routed_scaling_factor):
 
 
 def cutedsl_stage2_gemm1(hidden_states, g1w, hs_scale, g1ws, rr, ws, mp):
-    """Stage 2: GEMM1 (A-gather + grouped GEMM → FP8)."""
+    """Stage 2: GEMM1 (A-gather + grouped GEMM -> FP8)."""
     return moe_gemm1_fp8(
         hidden_states, g1w, hs_scale, g1ws,
         rr.m_indptr, rr.permuted_idx_to_token_idx,
@@ -295,7 +337,7 @@ def main():
     torch.cuda.synchronize()
     print(f"CuTeDSL first call: {time.time() - t0:.2f}s")
 
-    # SGLang warmup (run once end-to-end)
+    # SGLang warmup
     t0 = time.time()
     s_rt = sglang_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T)
     s_g1 = sglang_stage2_gemm1(hidden_states, hs_scale, g1w, g1ws, s_rt[5], s_rt[3], s_rt[2], T, device)
@@ -304,6 +346,12 @@ def main():
     sglang_out = sglang_stage5_finalize(s_g2, s_rt[6], s_rt[0], T, device)
     torch.cuda.synchronize()
     print(f"SGLang v2 first call: {time.time() - t0:.2f}s")
+
+    # Triton v2 warmup (SwiGLU kernel needs Triton JIT compile)
+    t0 = time.time()
+    triton_stage3_swiglu_requant(s_g1[0])
+    torch.cuda.synchronize()
+    print(f"Triton v2 SwiGLU warmup: {time.time() - t0:.2f}s")
 
     # ── End-to-end precision comparison ──
     print("\n=== End-to-End Precision ===")
@@ -320,21 +368,22 @@ def main():
     mp = rr.max_padded_tokens
     ws = allocate_moe_workspace(mp, H, I, device)
 
-    # Check for 0-token experts (known CuTeDSL bug)
+    # Check for 0-token experts
     masked_m = (rr.m_indptr[1:] - rr.m_indptr[:-1]).cpu()
     if (masked_m == 0).any():
         zero_experts = (masked_m == 0).sum().item()
-        print(f"\n  WARNING: {zero_experts} experts have 0 tokens — CuTeDSL GEMM will crash.")
+        print(f"\n  WARNING: {zero_experts} experts have 0 tokens — CuTeDSL GEMM may use early-return path.")
         print(f"  Try a larger --seq-len (current: {T}).\n")
 
-    # Prepare SGLang routing result (for stages 2-5)
+    # Prepare SGLang routing result (shared by SGLang v2 and Triton v2 for stages 2-5)
     s_routing = sglang_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T)
     s_topk_weights, s_topk_ids, s_expert_offsets, s_ps1, s_ps2, s_a_map, s_c_map = s_routing
 
-    # Collect all stage timings: list of (name, cd_time, sg_time)
+    # Collect all stage timings: list of (name, cd_time, sg_time, tr_time)
     stage_timings = []
 
     # Stage 1: Routing
+    # Triton v2 uses exact same routing as SGLang v2 (moe_fused_gate + prepare_moe_input)
     cd_t = cuda_time(
         lambda: cutedsl_stage1_routing(routing_logits, routing_bias, routed_scaling_factor),
         iters=ITERS,
@@ -343,7 +392,8 @@ def main():
         lambda: sglang_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T),
         iters=ITERS,
     )
-    stage_timings.append(("1. Routing", cd_t, sg_t))
+    tr_t = sg_t  # Triton v2 uses identical routing
+    stage_timings.append(("1. Routing", cd_t, sg_t, tr_t))
 
     # Stage 2: GEMM1
     try:
@@ -367,9 +417,10 @@ def main():
         ),
         iters=ITERS,
     )
-    stage_timings.append(("2. GEMM1", cd_t, sg_t))
+    tr_t = sg_t  # Triton v2 uses identical GEMM1 (sgl_kernel)
+    stage_timings.append(("2. GEMM1", cd_t, sg_t, tr_t))
 
-    # Stage 3: SwiGLU + Requant
+    # Stage 3: SwiGLU + Requant — this is where the three implementations differ
     if g1_out is not None:
         a_out, a_scale = cutedsl_stage3_swiglu(g1_out, g1_scale, ws, mp)
         cd_t = cuda_time(
@@ -383,7 +434,11 @@ def main():
     s_act_result = sglang_stage3_swiglu_requant(s_c1)
     s_int_q, s_a2_scale = s_act_result
     sg_t = cuda_time(lambda: sglang_stage3_swiglu_requant(s_c1), iters=ITERS)
-    stage_timings.append(("3. SwiGLU+Requant", cd_t, sg_t))
+
+    # Triton v2 SwiGLU
+    tr_act_result = triton_stage3_swiglu_requant(s_c1)
+    tr_t = cuda_time(lambda: triton_stage3_swiglu_requant(s_c1), iters=ITERS)
+    stage_timings.append(("3. SwiGLU+Requant", cd_t, sg_t, tr_t))
 
     # Stage 4: GEMM2
     if a_out is not None:
@@ -411,7 +466,8 @@ def main():
         ),
         iters=ITERS,
     )
-    stage_timings.append(("4. GEMM2", cd_t, sg_t))
+    tr_t = sg_t  # Triton v2 uses identical GEMM2 (sgl_kernel)
+    stage_timings.append(("4. GEMM2", cd_t, sg_t, tr_t))
 
     # Stage 5: Finalize
     if g2_out is not None:
@@ -423,12 +479,13 @@ def main():
         lambda: sglang_stage5_finalize(s_g2, s_c_map, s_topk_weights, T, device),
         iters=ITERS,
     )
-    stage_timings.append(("5. Finalize", cd_t, sg_t))
+    tr_t = sg_t  # Triton v2 uses identical finalize (sgl_kernel)
+    stage_timings.append(("5. Finalize", cd_t, sg_t, tr_t))
 
     # Workspace alloc overhead (CuTeDSL only)
     alloc_t = cuda_time(lambda: allocate_moe_workspace(mp, H, I, device), iters=ITERS)
 
-    # End-to-end
+    # End-to-end: CuTeDSL
     cd_e2e = cuda_time(
         lambda: cutedsl_fp8_moe(
             routing_logits, routing_bias, hidden_states, hs_scale,
@@ -440,7 +497,7 @@ def main():
         iters=ITERS,
     )
 
-    # SGLang v2 end-to-end (full run function from solution)
+    # End-to-end: SGLang v2
     def sglang_e2e():
         r = sglang_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T)
         g = sglang_stage2_gemm1(hidden_states, hs_scale, g1w, g1ws, r[5], r[3], r[2], T, device)
@@ -450,29 +507,55 @@ def main():
 
     sg_e2e = cuda_time(sglang_e2e, iters=ITERS)
 
+    # End-to-end: Triton v2 (same as SGLang except SwiGLU stage)
+    def triton_e2e():
+        r = sglang_stage1_routing(routing_logits, routing_bias, routed_scaling_factor, device, T)
+        g = sglang_stage2_gemm1(hidden_states, hs_scale, g1w, g1ws, r[5], r[3], r[2], T, device)
+        a = triton_stage3_swiglu_requant(g[0])
+        g2 = sglang_stage4_gemm2(a[0], a[1], g2w, g2ws, r[4], r[2], g[1], g[2], g[3], g[4], g[5], g[6], g[7], g[8], T, device)
+        return sglang_stage5_finalize(g2, r[6], r[0], T, device)
+
+    tr_e2e = cuda_time(triton_e2e, iters=ITERS)
+
     # ── Print results with percentage columns ──
-    # Compute totals from per-stage sums (excluding NaN)
-    cd_stage_total = sum(t for _, t, _ in stage_timings if t == t)  # NaN != NaN
-    sg_stage_total = sum(t for _, _, t in stage_timings)
+    cd_stage_total = sum(t for _, t, _, _ in stage_timings if t == t)
+    sg_stage_total = sum(t for _, _, t, _ in stage_timings)
+    tr_stage_total = sum(t for _, _, _, t in stage_timings)
 
     print(f"\n=== Per-Stage Timing ({ITERS} iters, median ms) ===")
-    print(f"{'Stage':<24} {'CuTeDSL':>8} {'%':>6} {'SGLang v2':>10} {'%':>6} {'Ratio':>8}")
-    print("-" * 68)
+    hdr = (f"{'Stage':<20} "
+           f"{'CuTeDSL':>8} {'%':>6}  "
+           f"{'SGLang':>8} {'%':>6}  "
+           f"{'Triton':>8} {'%':>6}  "
+           f"{'CD/SG':>6} {'CD/TR':>6}")
+    print(hdr)
+    print("-" * len(hdr))
 
-    for name, cd, sg in stage_timings:
+    for name, cd, sg, tr in stage_timings:
+        cd_str = f"{cd:>8.3f}" if cd == cd else "     N/A"
         cd_pct = f"{cd / cd_stage_total * 100:5.1f}%" if cd == cd and cd_stage_total > 0 else "  N/A"
         sg_pct = f"{sg / sg_stage_total * 100:5.1f}%" if sg_stage_total > 0 else "  N/A"
-        ratio_str = f"{cd/sg:>7.2f}x" if cd == cd else "   N/A"
-        cd_str = f"{cd:>8.3f}" if cd == cd else "     N/A"
-        print(f"{name:<24} {cd_str} {cd_pct:>6} {sg:>10.3f} {sg_pct:>6} {ratio_str}")
+        tr_pct = f"{tr / tr_stage_total * 100:5.1f}%" if tr_stage_total > 0 else "  N/A"
+        cd_sg = f"{cd/sg:>5.1f}x" if cd == cd else "  N/A"
+        cd_tr = f"{cd/tr:>5.1f}x" if cd == cd else "  N/A"
+        print(f"{name:<20} "
+              f"{cd_str} {cd_pct:>6}  "
+              f"{sg:>8.3f} {sg_pct:>6}  "
+              f"{tr:>8.3f} {tr_pct:>6}  "
+              f"{cd_sg} {cd_tr}")
 
-    print(f"{'   Workspace alloc':<24} {alloc_t:>8.3f} {'':>6} {'---':>10} {'':>6} {'':>8}")
+    print(f"{'  Workspace alloc':<20} {alloc_t:>8.3f} {'':>6}  {'---':>8} {'':>6}  {'---':>8} {'':>6}")
 
-    print("-" * 68)
-    cd_e2e_pct = f"{cd_e2e / cd_e2e * 100:5.1f}%" if cd_e2e == cd_e2e else "  N/A"
-    sg_e2e_pct = f"{sg_e2e / sg_e2e * 100:5.1f}%" if sg_e2e > 0 else "  N/A"
-    print(f"{'End-to-end':<24} {cd_e2e:>8.3f} {'':>6} {sg_e2e:>10.3f} {'':>6} {cd_e2e/sg_e2e:>7.2f}x")
-    print(f"{'Sum of stages':<24} {cd_stage_total:>8.3f} {'':>6} {sg_stage_total:>10.3f} {'':>6}")
+    print("-" * len(hdr))
+    print(f"{'End-to-end':<20} "
+          f"{cd_e2e:>8.3f} {'':>6}  "
+          f"{sg_e2e:>8.3f} {'':>6}  "
+          f"{tr_e2e:>8.3f} {'':>6}  "
+          f"{cd_e2e/sg_e2e:>5.1f}x {cd_e2e/tr_e2e:>5.1f}x")
+    print(f"{'Sum of stages':<20} "
+          f"{cd_stage_total:>8.3f} {'':>6}  "
+          f"{sg_stage_total:>8.3f} {'':>6}  "
+          f"{tr_stage_total:>8.3f} {'':>6}")
 
 
 if __name__ == "__main__":
