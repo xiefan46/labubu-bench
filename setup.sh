@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 # ============================================================
 # labubu-bench setup script (re-entrant)
@@ -18,11 +18,23 @@ BOLD='\033[1m'
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
+RED='\033[0;31m'
 RESET='\033[0m'
 
 step() { echo -e "\n${BOLD}${CYAN}=> $1${RESET}"; }
+warn() { echo -e "${YELLOW}WARNING: $1${RESET}"; }
+fail() { echo -e "${RED}FAILED: $1${RESET}"; }
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+ERRORS=0
+
+# Helper: run a command, warn on failure but continue
+run_or_warn() {
+    if ! "$@"; then
+        warn "Command failed: $*"
+        ERRORS=$((ERRORS + 1))
+    fi
+}
 
 # ---------- Miniconda (parallel to labubu-bench) ----------
 step "Installing Miniconda"
@@ -34,8 +46,8 @@ fi
 
 source ../miniconda3/bin/activate
 
-conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
-conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>/dev/null || true
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>/dev/null || true
 
 # ---------- Conda environment ----------
 step "Setting up conda environment"
@@ -46,22 +58,22 @@ conda activate fi-bench
 
 # ---------- Python packages ----------
 step "Installing Python packages"
-pip install safetensors torch pytest
+run_or_warn pip install safetensors torch pytest
 # Pin cuda-python to match CUDA 12.8 driver; cuda-python>=13.x causes
 # cudaErrorInsufficientDriver on machines with CUDA 12.8 drivers.
-pip install "cuda-python>=12.8,<13"
+run_or_warn pip install "cuda-python>=12.8,<13"
 
 # ---------- Git LFS + Nsight Systems ----------
 step "Installing Git LFS and Nsight Systems"
-apt-get update
-apt-get install git-lfs -y
-apt-get install nsight-systems-cli -y || echo "Warning: nsight-systems-cli not available, skipping"
-git lfs install
+run_or_warn apt-get update
+run_or_warn apt-get install git-lfs -y
+apt-get install nsight-systems-cli -y 2>/dev/null || warn "nsight-systems-cli not available, skipping"
+run_or_warn git lfs install
 
 # ---------- Dataset ----------
 step "Cloning flashinfer-trace dataset"
 if [ ! -d flashinfer-trace ]; then
-    git clone https://huggingface.co/datasets/flashinfer-ai/flashinfer-trace
+    run_or_warn git clone https://huggingface.co/datasets/flashinfer-ai/flashinfer-trace
 fi
 
 # ---------- Projects ----------
@@ -70,31 +82,46 @@ mkdir -p projects
 cd projects
 
 if [ ! -d flashinfer ]; then
-    git clone --recursive https://github.com/xiefan46/flashinfer.git
-    cd flashinfer && git remote add upstream https://github.com/flashinfer-ai/flashinfer.git && cd ..
+    run_or_warn git clone --recursive https://github.com/xiefan46/flashinfer.git
+    if [ -d flashinfer ]; then
+        (cd flashinfer && git remote add upstream https://github.com/flashinfer-ai/flashinfer.git 2>/dev/null || true)
+    fi
 fi
-cd flashinfer && git checkout feat/cutedsl-fp8-moe && git submodule update --init --recursive && pip install --no-build-isolation -e . -v && cd ..
+if [ -d flashinfer ]; then
+    (cd flashinfer && run_or_warn git checkout feat/cutedsl-fp8-moe && run_or_warn git submodule update --init --recursive && run_or_warn pip install --no-build-isolation -e . -v)
+fi
 
 if [ ! -d flashinfer-bench ]; then
-    git clone https://github.com/xiefan46/flashinfer-bench.git
+    run_or_warn git clone https://github.com/xiefan46/flashinfer-bench.git
 fi
-cd flashinfer-bench && git checkout feat/cli-required-matched-ratio && pip install -v -e . && cd ..
+if [ -d flashinfer-bench ]; then
+    (cd flashinfer-bench && run_or_warn git checkout feat/cli-required-matched-ratio && run_or_warn pip install -v -e .)
+fi
 
 if [ ! -d flashinfer-bench-starter-kit ]; then
-    git clone https://github.com/xiefan46/flashinfer-bench-starter-kit.git
-    cd flashinfer-bench-starter-kit && git remote add upstream https://github.com/flashinfer-ai/flashinfer-bench-starter-kit.git && cd ..
+    run_or_warn git clone https://github.com/xiefan46/flashinfer-bench-starter-kit.git
+    if [ -d flashinfer-bench-starter-kit ]; then
+        (cd flashinfer-bench-starter-kit && git remote add upstream https://github.com/flashinfer-ai/flashinfer-bench-starter-kit.git 2>/dev/null || true)
+    fi
 fi
+
+cd "$REPO_ROOT"
 
 # ---------- SGLang sgl-kernel (for sglang_fp8_blockwise_moe solution) ----------
 step "Installing sgl_kernel"
-pip install sgl-kernel
+run_or_warn pip install sgl-kernel
+
+# ============================================================
+# Everything below this line is patch/pack/copy — MUST always run
+# ============================================================
 
 # ---------- Patch: fix flashinfer_moe solution bugs in flashinfer-trace ----------
 step "Patching flashinfer-trace dataset"
-# Find the flashinfer_moe JSON anywhere under flashinfer-trace/solutions/ (directory structure may vary)
-FLASHINFER_MOE_JSON=$(find "$REPO_ROOT/flashinfer-trace/solutions" -name '*.json' -exec grep -l '"flashinfer_moe"' {} \; 2>/dev/null | head -1)
-if [ -n "$FLASHINFER_MOE_JSON" ]; then
-    python3 << PATCH_EOF
+if [ -d "$REPO_ROOT/flashinfer-trace/solutions" ]; then
+    # Find the flashinfer_moe JSON anywhere under flashinfer-trace/solutions/ (directory structure may vary)
+    FLASHINFER_MOE_JSON=$(find "$REPO_ROOT/flashinfer-trace/solutions" -name '*.json' -exec grep -l '"flashinfer_moe"' {} \; 2>/dev/null | head -1)
+    if [ -n "$FLASHINFER_MOE_JSON" ]; then
+        python3 << PATCH_EOF
 import json, re
 
 f = "$FLASHINFER_MOE_JSON"
@@ -128,8 +155,11 @@ if patched:
 else:
     print("Already patched, skipping")
 PATCH_EOF
+    else
+        echo "flashinfer_moe JSON not found in dataset, skipping patch"
+    fi
 else
-    echo "flashinfer_moe JSON not found in dataset, skipping patch"
+    echo "flashinfer-trace/solutions not found, skipping patch"
 fi
 
 # ---------- Clear flashinfer-bench solution cache ----------
@@ -210,3 +240,7 @@ flashinfer-bench run --local $FIB_DATASET_PATH --resume
 ${YELLOW}# Custom benchmark parameters:${RESET}
 flashinfer-bench run --local $FIB_DATASET_PATH --warmup-runs 10 --iterations 100 --num-trials 5
 "
+
+if [ $ERRORS -gt 0 ]; then
+    warn "$ERRORS step(s) had non-fatal errors (see above)"
+fi
