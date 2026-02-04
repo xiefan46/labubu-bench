@@ -89,6 +89,50 @@ fi
 step "Installing sgl_kernel"
 pip install sgl-kernel
 
+# ---------- Patch: fix flashinfer_moe solution bugs in flashinfer-trace ----------
+step "Patching flashinfer-trace dataset"
+MOE_SOL_DIR="$REPO_ROOT/flashinfer-trace/solutions/moe/moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048"
+# Find the flashinfer_moe JSON (may have various filenames like flashinfer_wrapper_*.json)
+FLASHINFER_MOE_JSON=$(find "$MOE_SOL_DIR" -name '*.json' -exec grep -l '"flashinfer_moe"' {} \; 2>/dev/null | head -1)
+if [ -n "$FLASHINFER_MOE_JSON" ]; then
+    python3 << PATCH_EOF
+import json, re
+
+f = "$FLASHINFER_MOE_JSON"
+d = json.load(open(f))
+patched = False
+
+# Fix 1: missing destination_passing_style
+if d["spec"].get("destination_passing_style") is not False:
+    d["spec"]["destination_passing_style"] = False
+    print("Patched: set destination_passing_style=false")
+    patched = True
+
+# Fix 2: tile_tokens_dim is not a public API param, remove it from source
+for src in d.get("sources", []):
+    if src["path"] == "main.py" and "tile_tokens_dim" in src["content"]:
+        code = src["content"]
+        # Remove _next_power_of_2 helper
+        code = re.sub(r'\ndef _next_power_of_2\(.*?\n(?=\ndef |\n@|\Z)', '\n', code, flags=re.DOTALL)
+        # Remove _get_tile_tokens_dim helper
+        code = re.sub(r'\ndef _get_tile_tokens_dim\(.*?\n(?=\ndef |\n@|\Z)', '\n', code, flags=re.DOTALL)
+        # Remove tile_tokens_dim local variable assignment
+        code = re.sub(r'    tile_tokens_dim = _get_tile_tokens_dim\(.*?\n', '', code)
+        # Remove tile_tokens_dim=tile_tokens_dim kwarg in function call
+        code = re.sub(r'        tile_tokens_dim=tile_tokens_dim,\n', '', code)
+        src["content"] = code
+        print("Patched: removed tile_tokens_dim from main.py")
+        patched = True
+
+if patched:
+    json.dump(d, open(f, "w"), indent=2)
+else:
+    print("Already patched, skipping")
+PATCH_EOF
+else
+    echo "flashinfer_moe JSON not found in dataset, skipping patch"
+fi
+
 # ---------- Clear flashinfer-bench solution cache ----------
 step "Clearing solution build cache"
 if [ -d ~/.cache/flashinfer_bench/cache/python ]; then
@@ -109,10 +153,19 @@ fi
 
 step "Copying custom solutions"
 if [ -d "$REPO_SOL_DIR" ]; then
-    find "$REPO_SOL_DIR" -name '*.json' | while read src; do
+    find "$REPO_SOL_DIR" -name '*.json' ! -name 'pack_solution.py' | while read src; do
         # Mirror the directory structure: solutions/moe/def_name/sol.json -> flashinfer-trace/solutions/moe/def_name/sol.json
         rel="${src#$REPO_SOL_DIR/}"
         dst="$REPO_ROOT/flashinfer-trace/solutions/$rel"
+        # Skip if a solution with the same name already exists in the dataset (from HuggingFace)
+        sol_name=$(python3 -c "import json; print(json.load(open('$src')).get('name',''))" 2>/dev/null || echo "")
+        if [ -n "$sol_name" ]; then
+            existing=$(find "$(dirname "$dst")" -name '*.json' -exec grep -l "\"$sol_name\"" {} \; 2>/dev/null | head -1)
+            if [ -n "$existing" ] && [ "$existing" != "$dst" ]; then
+                echo "Skipped: $rel (already exists as $(basename "$existing"))"
+                continue
+            fi
+        fi
         mkdir -p "$(dirname "$dst")"
         cp -f "$src" "$dst"
         echo "Copied: $rel"
