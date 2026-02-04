@@ -51,10 +51,10 @@ pip install safetensors torch pytest
 # cudaErrorInsufficientDriver on machines with CUDA 12.8 drivers.
 pip install "cuda-python>=12.8,<13"
 
-# ---------- Git LFS ----------
-step "Installing Git LFS"
+# ---------- Git LFS + Nsight Systems ----------
+step "Installing Git LFS and Nsight Systems"
 apt-get update
-apt-get install git-lfs -y
+apt-get install git-lfs nsight-systems-cli -y
 git lfs install
 
 # ---------- Dataset ----------
@@ -87,46 +87,6 @@ fi
 # ---------- SGLang sgl-kernel (for sglang_fp8_blockwise_moe solution) ----------
 step "Installing sgl_kernel"
 pip install sgl-kernel
-
-# ---------- Patch: fix flashinfer_moe solution bugs in flashinfer-trace ----------
-step "Patching flashinfer-trace dataset"
-MOE_SOL_DIR="$REPO_ROOT/flashinfer-trace/solutions/moe/moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048"
-if [ -f "$MOE_SOL_DIR/flashinfer_wrapper_9sdjf3.json" ]; then
-    python3 << PATCH_EOF
-import json, re
-
-f = "$MOE_SOL_DIR/flashinfer_wrapper_9sdjf3.json"
-d = json.load(open(f))
-patched = False
-
-# Fix 1: missing destination_passing_style
-if d["spec"].get("destination_passing_style") is not False:
-    d["spec"]["destination_passing_style"] = False
-    print("Patched: set destination_passing_style=false")
-    patched = True
-
-# Fix 2: tile_tokens_dim is not a public API param, remove it from source
-for src in d.get("sources", []):
-    if src["path"] == "main.py" and "tile_tokens_dim" in src["content"]:
-        code = src["content"]
-        # Remove _next_power_of_2 helper
-        code = re.sub(r'\ndef _next_power_of_2\(.*?\n(?=\ndef |\n@|\Z)', '\n', code, flags=re.DOTALL)
-        # Remove _get_tile_tokens_dim helper
-        code = re.sub(r'\ndef _get_tile_tokens_dim\(.*?\n(?=\ndef |\n@|\Z)', '\n', code, flags=re.DOTALL)
-        # Remove tile_tokens_dim local variable assignment
-        code = re.sub(r'    tile_tokens_dim = _get_tile_tokens_dim\(.*?\n', '', code)
-        # Remove tile_tokens_dim=tile_tokens_dim kwarg in function call
-        code = re.sub(r'        tile_tokens_dim=tile_tokens_dim,\n', '', code)
-        src["content"] = code
-        print("Patched: removed tile_tokens_dim from main.py")
-        patched = True
-
-if patched:
-    json.dump(d, open(f, "w"), indent=2)
-else:
-    print("Already patched, skipping")
-PATCH_EOF
-fi
 
 # ---------- Clear flashinfer-bench solution cache ----------
 step "Clearing solution build cache"

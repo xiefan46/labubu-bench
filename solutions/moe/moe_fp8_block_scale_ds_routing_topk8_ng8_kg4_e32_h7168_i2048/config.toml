@@ -69,3 +69,12 @@ source_dir = "cutedsl_v3_2"
 language = "python"
 entry_point = "main.py::run"
 dependencies = ["flashinfer"]
+
+[variants.flashinfer_moe]
+name = "flashinfer_moe"
+description = "FlashInfer native trtllm_fp8_block_scale_moe baseline (CUTLASS SM100 kernel)."
+source_dir = "flashinfer_moe"
+language = "python"
+entry_point = "main.py::run"
+dependencies = ["flashinfer"]
+destination_passing_style = false
