@@ -54,7 +54,8 @@ pip install "cuda-python>=12.8,<13"
 # ---------- Git LFS + Nsight Systems ----------
 step "Installing Git LFS and Nsight Systems"
 apt-get update
-apt-get install git-lfs nsight-systems-cli -y
+apt-get install git-lfs -y
+apt-get install nsight-systems-cli -y || echo "Warning: nsight-systems-cli not available, skipping"
 git lfs install
 
 # ---------- Dataset ----------
