@@ -61,3 +61,11 @@ source_dir = "cutedsl_v3"
 language = "python"
 entry_point = "main.py::run"
 dependencies = ["flashinfer"]
+
+[variants.cutedsl_v3_2]
+name = "cutedsl_moe_fp8_v3_2"
+description = "CuTeDSL FP8 MoE v3.2: GEMM1 epilogue directly outputs FP8 + per-128-block scales, eliminating separate BF16->FP8 quantization kernel."
+source_dir = "cutedsl_v3_2"
+language = "python"
+entry_point = "main.py::run"
+dependencies = ["flashinfer"]
