@@ -91,9 +91,8 @@ pip install sgl-kernel
 
 # ---------- Patch: fix flashinfer_moe solution bugs in flashinfer-trace ----------
 step "Patching flashinfer-trace dataset"
-MOE_SOL_DIR="$REPO_ROOT/flashinfer-trace/solutions/moe/moe_fp8_block_scale_ds_routing_topk8_ng8_kg4_e32_h7168_i2048"
-# Find the flashinfer_moe JSON (may have various filenames like flashinfer_wrapper_*.json)
-FLASHINFER_MOE_JSON=$(find "$MOE_SOL_DIR" -name '*.json' -exec grep -l '"flashinfer_moe"' {} \; 2>/dev/null | head -1)
+# Find the flashinfer_moe JSON anywhere under flashinfer-trace/solutions/ (directory structure may vary)
+FLASHINFER_MOE_JSON=$(find "$REPO_ROOT/flashinfer-trace/solutions" -name '*.json' -exec grep -l '"flashinfer_moe"' {} \; 2>/dev/null | head -1)
 if [ -n "$FLASHINFER_MOE_JSON" ]; then
     python3 << PATCH_EOF
 import json, re
@@ -157,12 +156,12 @@ if [ -d "$REPO_SOL_DIR" ]; then
         # Mirror the directory structure: solutions/moe/def_name/sol.json -> flashinfer-trace/solutions/moe/def_name/sol.json
         rel="${src#$REPO_SOL_DIR/}"
         dst="$REPO_ROOT/flashinfer-trace/solutions/$rel"
-        # Skip if a solution with the same name already exists in the dataset (from HuggingFace)
+        # Skip if a solution with the same name already exists anywhere in the dataset (from HuggingFace)
         sol_name=$(python3 -c "import json; print(json.load(open('$src')).get('name',''))" 2>/dev/null || echo "")
         if [ -n "$sol_name" ]; then
-            existing=$(find "$(dirname "$dst")" -name '*.json' -exec grep -l "\"$sol_name\"" {} \; 2>/dev/null | head -1)
+            existing=$(find "$REPO_ROOT/flashinfer-trace/solutions" -name '*.json' -exec grep -l "\"name\": \"$sol_name\"" {} \; 2>/dev/null | head -1)
             if [ -n "$existing" ] && [ "$existing" != "$dst" ]; then
-                echo "Skipped: $rel (already exists as $(basename "$existing"))"
+                echo "Skipped: $rel (already exists as $existing)"
                 continue
             fi
         fi
