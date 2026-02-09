@@ -24,6 +24,11 @@ step() { echo -e "\n${BOLD}${CYAN}=> $1${RESET}"; }
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# ---------- Pull latest labubu-bench ----------
+step "Updating labubu-bench"
+cd "$REPO_ROOT"
+git pull || echo "Warning: git pull failed (maybe no remote or uncommitted changes)"
+
 # ---------- Miniconda (parallel to labubu-bench) ----------
 step "Installing Miniconda"
 if [ ! -d ../miniconda3 ]; then
@@ -65,24 +70,36 @@ if [ ! -d flashinfer-trace ]; then
 fi
 
 # ---------- Projects ----------
-step "Cloning projects"
+step "Setting up projects"
 mkdir -p projects
 cd projects
 
+# flashinfer: clone or pull, then checkout branch and install
 if [ ! -d flashinfer ]; then
     git clone --recursive https://github.com/xiefan46/flashinfer.git
     cd flashinfer && git remote add upstream https://github.com/flashinfer-ai/flashinfer.git 2>/dev/null || true && cd ..
+else
+    echo "flashinfer exists, pulling latest..."
+    cd flashinfer && git fetch origin && cd ..
 fi
-cd flashinfer && git checkout feat/cutedsl-fp8-moe && git submodule update --init --recursive && pip install --no-build-isolation -e . -v && cd ..
+cd flashinfer && git checkout feat/cutedsl-fp8-moe && git pull origin feat/cutedsl-fp8-moe && git submodule update --init --recursive && pip install --no-build-isolation -e . -v && cd ..
 
+# flashinfer-bench: clone or pull, then checkout branch and install
 if [ ! -d flashinfer-bench ]; then
     git clone https://github.com/xiefan46/flashinfer-bench.git
+else
+    echo "flashinfer-bench exists, pulling latest..."
+    cd flashinfer-bench && git fetch origin && cd ..
 fi
-cd flashinfer-bench && git checkout feat/cli-required-matched-ratio && pip install -v -e . && cd ..
+cd flashinfer-bench && git checkout feat/cli-required-matched-ratio && git pull origin feat/cli-required-matched-ratio && pip install -v -e . && cd ..
 
+# flashinfer-bench-starter-kit: clone or pull
 if [ ! -d flashinfer-bench-starter-kit ]; then
     git clone https://github.com/xiefan46/flashinfer-bench-starter-kit.git
     cd flashinfer-bench-starter-kit && git remote add upstream https://github.com/flashinfer-ai/flashinfer-bench-starter-kit.git 2>/dev/null || true && cd ..
+else
+    echo "flashinfer-bench-starter-kit exists, pulling latest..."
+    cd flashinfer-bench-starter-kit && git pull && cd ..
 fi
 
 cd "$REPO_ROOT"
