@@ -99,21 +99,6 @@ def _get_dynamic(M, device):
     return _dynamic[key]
 
 
-def _build_m_indptr(expert_offsets, num_experts):
-    """Convert expert_offsets [E+1] to m_indptr [E+1] with 4-alignment padding.
-
-    FlashInfer requires each value in m_indptr to be a multiple of 4.
-    """
-    m_indptr = expert_offsets[:num_experts + 1].to(torch.int32)
-    # Pad each offset up to multiple of 4
-    # NOTE: m_indptr must be non-decreasing. We pad each segment end up.
-    # The simplest correct approach: align each offset to ceil_div(x, 4)*4
-    # But this changes the segment boundaries. Instead, we keep offsets as-is
-    # since prepare_moe_input already pads to alignment in practice.
-    # If alignment issues arise, uncomment:
-    # m_indptr = ((m_indptr + 3) // 4) * 4
-    return m_indptr
-
 
 @torch.no_grad()
 def run(
@@ -174,13 +159,39 @@ def run(
     rep_a_q = shuffle_rows(hidden_states.contiguous(), a_map, (m * topk, k))
     rep_a_scales = shuffle_rows(a_scale, a_map, (m * topk, k // BLOCK))
 
-    # --- Build m_indptr for FlashInfer ---
-    m_indptr = expert_offsets[:num_experts + 1].to(torch.int32)
+    # --- Build 4-aligned m_indptr for FlashInfer ---
+    # FlashInfer requires every element of m_indptr to be a multiple of 4.
+    # We build aligned_indptr by rounding up each expert segment boundary,
+    # then pad the scattered A matrix / scales with zero rows to fill gaps.
+    raw_indptr = expert_offsets[:num_experts + 1].to(torch.int64)
+    aligned_indptr = ((raw_indptr + 3) // 4) * 4
+    aligned_indptr[0] = 0  # first element must stay 0
+    # Recompute: make aligned_indptr non-decreasing and preserve segment sizes
+    # Each segment grows by its own alignment padding
+    seg_sizes = raw_indptr[1:] - raw_indptr[:-1]  # original segment sizes [E]
+    aligned_seg_sizes = ((seg_sizes + 3) // 4) * 4  # aligned segment sizes
+    aligned_indptr_built = torch.zeros(num_experts + 1, dtype=torch.int64, device=device)
+    aligned_indptr_built[1:] = torch.cumsum(aligned_seg_sizes, dim=0)
+    m_indptr = aligned_indptr_built.to(torch.int32)
+    cum_m_aligned = int(m_indptr[-1].item())
+    M_total = m * topk
+
+    # Build padded A matrix and A scales for GEMM1
+    # We scatter original rows into aligned positions, leaving padding rows as zero
+    padded_a_q = torch.zeros((cum_m_aligned, k), device=device, dtype=rep_a_q.dtype)
+    padded_a_scales = torch.zeros((cum_m_aligned, k // BLOCK), device=device, dtype=rep_a_scales.dtype)
+    for e_idx in range(num_experts):
+        src_start = int(raw_indptr[e_idx].item())
+        src_end = int(raw_indptr[e_idx + 1].item())
+        dst_start = int(m_indptr[e_idx].item())
+        seg_len = src_end - src_start
+        if seg_len > 0:
+            padded_a_q[dst_start:dst_start + seg_len] = rep_a_q[src_start:src_end]
+            padded_a_scales[dst_start:dst_start + seg_len] = rep_a_scales[src_start:src_end]
 
     # --- Prepare scales for FlashInfer ---
     # FlashInfer a_scale: [K//128, cum_m] when scale_major_mode="MN"
-    # rep_a_scales is [cum_m, K//128], so transpose
-    fi_a_scale_1 = rep_a_scales.T.contiguous()  # [H//128, cum_m]
+    fi_a_scale_1 = padded_a_scales.T.contiguous()  # [H//128, cum_m_aligned]
 
     # FlashInfer b: [E, N, K] column-major
     # gemm1_weights is [E, 2I, H] — already in [E, N, K] format
@@ -191,9 +202,9 @@ def run(
     fi_b_scale_1 = gemm1_weights_scale.to(torch.float32)
 
     # --- K3: GEMM1 via FlashInfer ---
-    c1 = d["c1"]
+    c1_padded = torch.empty((cum_m_aligned, 2 * I), device=device, dtype=torch.bfloat16)
     group_gemm_fp8_nt_groupwise(
-        a=rep_a_q,
+        a=padded_a_q,
         b=fi_b1,
         a_scale=fi_a_scale_1,
         b_scale=fi_b_scale_1,
@@ -201,11 +212,20 @@ def run(
         scale_granularity_mnk=(1, 128, 128),
         scale_major_mode="MN",
         mma_sm=1,
-        out=c1,
+        out=c1_padded,
     )
 
+    # Extract original (non-padded) rows from GEMM1 output for SwiGLU
+    c1 = d["c1"]
+    for e_idx in range(num_experts):
+        src_start = int(raw_indptr[e_idx].item())
+        src_end = int(raw_indptr[e_idx + 1].item())
+        dst_start = int(m_indptr[e_idx].item())
+        seg_len = src_end - src_start
+        if seg_len > 0:
+            c1[src_start:src_end] = c1_padded[dst_start:dst_start + seg_len]
+
     # --- K4: Fused SwiGLU + FP8 quantization (Triton) ---
-    M_total = m * topk
     intermediate_q = d["intermediate_q"]
     a2_scale = d["a2_scale"]
 
@@ -224,9 +244,20 @@ def run(
         BLOCK_N=BLOCK,
     )
 
+    # --- Build padded A matrix for GEMM2 ---
+    padded_a2_q = torch.zeros((cum_m_aligned, n), device=device, dtype=intermediate_q.dtype)
+    padded_a2_scales = torch.zeros((cum_m_aligned, n // BLOCK), device=device, dtype=a2_scale.dtype)
+    for e_idx in range(num_experts):
+        src_start = int(raw_indptr[e_idx].item())
+        src_end = int(raw_indptr[e_idx + 1].item())
+        dst_start = int(m_indptr[e_idx].item())
+        seg_len = src_end - src_start
+        if seg_len > 0:
+            padded_a2_q[dst_start:dst_start + seg_len] = intermediate_q[src_start:src_end]
+            padded_a2_scales[dst_start:dst_start + seg_len] = a2_scale[src_start:src_end]
+
     # --- Prepare GEMM2 scales ---
-    # a2_scale is [cum_m, I//128], transpose for FlashInfer
-    fi_a_scale_2 = a2_scale.T.contiguous()  # [I//128, cum_m]
+    fi_a_scale_2 = padded_a2_scales.T.contiguous()  # [I//128, cum_m_aligned]
 
     # gemm2_weights: [E, H, I] — already [E, N, K]
     fi_b2 = gemm2_weights
@@ -235,9 +266,9 @@ def run(
     fi_b_scale_2 = gemm2_weights_scale.to(torch.float32)
 
     # --- K5: GEMM2 via FlashInfer ---
-    c2 = d["c2"]
+    c2_padded = torch.empty((cum_m_aligned, H), device=device, dtype=torch.bfloat16)
     group_gemm_fp8_nt_groupwise(
-        a=intermediate_q,
+        a=padded_a2_q,
         b=fi_b2,
         a_scale=fi_a_scale_2,
         b_scale=fi_b_scale_2,
@@ -245,8 +276,18 @@ def run(
         scale_granularity_mnk=(1, 128, 128),
         scale_major_mode="MN",
         mma_sm=1,
-        out=c2,
+        out=c2_padded,
     )
+
+    # Extract original rows from GEMM2 output
+    c2 = d["c2"]
+    for e_idx in range(num_experts):
+        src_start = int(raw_indptr[e_idx].item())
+        src_end = int(raw_indptr[e_idx + 1].item())
+        dst_start = int(m_indptr[e_idx].item())
+        seg_len = src_end - src_start
+        if seg_len > 0:
+            c2[src_start:src_end] = c2_padded[dst_start:dst_start + seg_len]
 
     # --- K6: Weighted gather + accumulate ---
     output = d["output"]
