@@ -197,9 +197,9 @@ def run(
     # gemm1_weights is [E, 2I, H] — already in [E, N, K] format
     fi_b1 = gemm1_weights  # [E, 2I, H]
 
-    # FlashInfer b_scale: [E, N//128, K//128] when scale_major_mode="MN"
-    # gemm1_weights_scale is [E, 2I//128, H//128] — already correct
-    fi_b_scale_1 = gemm1_weights_scale.to(torch.float32)
+    # FlashInfer b_scale: [E, K//128, N//128] when scale_major_mode="MN"
+    # gemm1_weights_scale is [E, 2I//128, H//128] = [E, N//128, K//128], need transpose
+    fi_b_scale_1 = gemm1_weights_scale.to(torch.float32).transpose(1, 2).contiguous()
 
     # --- K3: GEMM1 via FlashInfer ---
     c1_padded = torch.empty((cum_m_aligned, 2 * I), device=device, dtype=torch.bfloat16)
@@ -262,8 +262,8 @@ def run(
     # gemm2_weights: [E, H, I] — already [E, N, K]
     fi_b2 = gemm2_weights
 
-    # gemm2_weights_scale: [E, H//128, I//128] — already [E, N//128, K//128]
-    fi_b_scale_2 = gemm2_weights_scale.to(torch.float32)
+    # gemm2_weights_scale: [E, H//128, I//128] = [E, N//128, K//128], need transpose
+    fi_b_scale_2 = gemm2_weights_scale.to(torch.float32).transpose(1, 2).contiguous()
 
     # --- K5: GEMM2 via FlashInfer ---
     c2_padded = torch.empty((cum_m_aligned, H), device=device, dtype=torch.bfloat16)
