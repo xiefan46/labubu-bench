@@ -93,6 +93,33 @@ knowledge/
 3. **What to record**: Bug root causes and fixes, benchmark results, API/library quirks discovered, architectural decisions and rationale, workload parameter analysis, any insight that would save time if encountered again.
 4. **Update existing files**: If new information relates to an existing knowledge file, update that file rather than creating a new one.
 
+## Adding a New Solution
+
+Solutions live in `solutions/<op_type>/<definition_name>/` within labubu-bench (NOT directly in flashinfer-trace). `setup.sh` runs `pack_solution.py --all` to generate JSON files and copies them into `flashinfer-trace/solutions/`.
+
+### Steps
+
+1. **Create source directory**: `solutions/<op_type>/<def_name>/<variant_name>/main.py` (and any other source files).
+2. **Add variant to `config.toml`** in the same `<def_name>/` directory:
+   ```toml
+   [variants.<variant_key>]
+   name = "<solution_name>"
+   description = "..."
+   source_dir = "<variant_name>"
+   language = "python"
+   entry_point = "main.py::run"
+   dependencies = ["flashinfer"]          # or ["sgl_kernel", "triton"], etc.
+   # destination_passing_style = false    # only if solution does NOT return output directly
+   ```
+3. **Commit and push** to labubu-bench. On the remote server, `setup.sh` will:
+   - Run `pack_solution.py --all` → generates `<solution_name>.json`
+   - Copy all `*.json` to `flashinfer-trace/solutions/<op_type>/<def_name>/`
+
+### Key rules
+- **Never commit solution JSON directly into flashinfer-trace** — always go through the `solutions/` + `config.toml` + `pack_solution.py` pipeline.
+- `pack_solution.py` uses `pack_solution_from_files()` from flashinfer-bench, which reads all source files from the variant directory and embeds them into the JSON.
+- The `run()` function signature must match the Definition's input spec exactly.
+
 ## Architecture Notes
 
 - FlashInfer uses a **JIT compilation** model — CUDA kernels are compiled on first use, not at install time. Header templates live in `include/flashinfer/`, Python bindings in `csrc/`.
