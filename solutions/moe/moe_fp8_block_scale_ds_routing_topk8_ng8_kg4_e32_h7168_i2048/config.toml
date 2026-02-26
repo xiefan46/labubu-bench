@@ -38,6 +38,15 @@ entry_point = "main.py::run"
 dependencies = ["sgl_kernel", "triton"]
 destination_passing_style = false
 
+[variants.triton_fused_v3]
+name = "triton_fused_moe_v3"
+description = "Triton fused MoE v3: Replace sgl_kernel GEMM with FlashInfer group_gemm_fp8_nt_groupwise for GEMM1/GEMM2."
+source_dir = "triton_fused_v3"
+language = "python"
+entry_point = "main.py::run"
+dependencies = ["sgl_kernel", "triton", "flashinfer"]
+destination_passing_style = false
+
 [variants.cutedsl]
 name = "cutedsl_moe_fp8"
 description = "CuTeDSL FP8 MoE pipeline on Blackwell SM100+: Routing → GEMM1 → SwiGLU+Requant → GEMM2 → Finalize"
